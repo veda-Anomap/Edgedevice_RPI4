@@ -1,0 +1,49 @@
+﻿# Ignore all Markdown files except README.md
+*.md
+!README.md
+
+# Images
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tiff
+*.ico
+
+# Videos
+*.mp4
+*.mov
+*.avi
+*.mkv
+*.flv
+*.wmv
+
+# Archives
+*.zip
+*.rar
+*.7z
+*.tar
+*.gz
+*.bz2
+
+# Python / build / cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+
+# Build directories
+build*/
+dist*/
+
+# OS / IDE files
+.DS_Store
+Thumbs.db
+*.swp
+*.vscode/
+*.idea/
+
+# Embedded git dirs
+.git/
