@@ -1,0 +1,15 @@
+[Unit]
+Description=STM32 Bridge Daemon (RPi)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+WorkingDirectory=/opt/stm_bridge
+ExecStart=/opt/stm_bridge/stm_bridge /opt/stm_bridge/config.json
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
