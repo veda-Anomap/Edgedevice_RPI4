@@ -13,7 +13,7 @@ bool Logger::open(const std::string& path) {
     ofs_.open(path, std::ios::app);
     return ofs_.is_open();
 }
-
+//
 void Logger::log(const std::string& level, const std::string& msg) {
     std::lock_guard<std::mutex> lock(mu_);
 
