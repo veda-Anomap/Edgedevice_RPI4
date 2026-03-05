@@ -159,33 +159,97 @@ tail -f /home/<USER>/stm_bridge/stm_bridge.log
 ---
 
 ## 7) systemd 서비스 등록(운영용)
+매번 `./build/stm_bridge ./config.json`를 직접 실행하지 않으려면 systemd로 등록하세요.
 
-1. 서비스 파일 복사
+### 7-1. 실행 파일 먼저 준비
 ```bash
+cd /home/<USER>/stm_bridge
+cmake -S . -B build
+cmake --build build -j
+```
+
+### 7-2. 서비스 파일 복사
+```bash
+cd /home/<USER>/stm_bridge
 sudo cp stm_bridge.service /etc/systemd/system/stm_bridge.service
 ```
 
-2. 서비스 파일 수정
+### 7-3. 서비스 파일 수정 (가장 중요)
 ```bash
 sudo nano /etc/systemd/system/stm_bridge.service
 ```
 
-아래 3개를 실제 환경에 맞게 수정:
-- `User=`
-- `WorkingDirectory=`
-- `ExecStart=`
+최소 아래 3개는 반드시 본인 환경으로 바꿉니다:
+- `User=<USER>`
+- `WorkingDirectory=/home/<USER>/stm_bridge`
+- `ExecStart=/home/<USER>/stm_bridge/build/stm_bridge /home/<USER>/stm_bridge/config.json`
 
-3. 반영/실행
+권장 예시:
+```ini
+[Unit]
+Description=STM32 Bridge Daemon (RPi)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=suseok
+WorkingDirectory=/home/suseok/stm_bridge
+ExecStart=/home/suseok/stm_bridge/build/stm_bridge /home/suseok/stm_bridge/config.json
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+```
+
+### 7-4. 등록/자동시작 설정
 ```bash
 sudo systemctl daemon-reload
 sudo systemctl enable stm_bridge
 sudo systemctl start stm_bridge
+```
+
+### 7-5. 상태 확인
+```bash
 sudo systemctl status stm_bridge --no-pager
 ```
 
-로그 확인:
+정상 예시:
+- `Active: active (running)`
+
+비정상 예시:
+- `Active: failed`
+- `ExecStart=... No such file or directory` (경로 오타)
+- `Permission denied` (권한/사용자 문제)
+
+### 7-6. 로그 확인
 ```bash
 journalctl -u stm_bridge -f
+```
+
+### 7-7. 서비스 설정 바꾼 뒤 재반영
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart stm_bridge
+sudo systemctl status stm_bridge --no-pager
+```
+
+### 7-8. 중지/비활성화/삭제
+중지:
+```bash
+sudo systemctl stop stm_bridge
+```
+
+자동 시작 해제:
+```bash
+sudo systemctl disable stm_bridge
+```
+
+서비스 파일 삭제:
+```bash
+sudo rm /etc/systemd/system/stm_bridge.service
+sudo systemctl daemon-reload
 ```
 
 ---
