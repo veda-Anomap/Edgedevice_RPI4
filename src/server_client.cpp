@@ -56,30 +56,16 @@ void ServerClient::close() {
         ::close(sockfd_);
         sockfd_ = -1;
     }
-    read_buf_.clear();
 }
 
 bool ServerClient::isConnected() const {
     return sockfd_ >= 0;
 }
 
-bool ServerClient::readLine(std::string& line, std::string& err) {
-    line.clear();
-    if (sockfd_ < 0) {
-        err = "not connected";
-        return false;
-    }
-
-    while (true) {
-        const std::size_t pos = read_buf_.find('\n');
-        if (pos != std::string::npos) {
-            line = read_buf_.substr(0, pos);
-            read_buf_.erase(0, pos + 1);
-            return true;
-        }
-
-        char buf[1024];
-        const ssize_t n = ::recv(sockfd_, buf, sizeof(buf), 0);
+bool ServerClient::recvAll(uint8_t* dst, size_t bytes, std::string& err) {
+    size_t got = 0;
+    while (got < bytes) {
+        const ssize_t n = ::recv(sockfd_, dst + got, bytes - got, 0);
         if (n < 0) {
             if (errno == EINTR) {
                 continue;
@@ -91,25 +77,15 @@ bool ServerClient::readLine(std::string& line, std::string& err) {
             err = "server disconnected";
             return false;
         }
-
-        read_buf_.append(buf, static_cast<std::size_t>(n));
+        got += static_cast<size_t>(n);
     }
+    return true;
 }
 
-bool ServerClient::sendJsonLine(const std::string& json, std::string& err) {
-    if (sockfd_ < 0) {
-        err = "not connected";
-        return false;
-    }
-
-    std::string out = json;
-    if (out.empty() || out.back() != '\n') {
-        out.push_back('\n');
-    }
-
-    std::size_t sent = 0;
-    while (sent < out.size()) {
-        const ssize_t n = ::send(sockfd_, out.data() + sent, out.size() - sent, 0);
+bool ServerClient::sendAll(const uint8_t* src, size_t bytes, std::string& err) {
+    size_t sent = 0;
+    while (sent < bytes) {
+        const ssize_t n = ::send(sockfd_, src + sent, bytes - sent, 0);
         if (n < 0) {
             if (errno == EINTR) {
                 continue;
@@ -121,7 +97,65 @@ bool ServerClient::sendJsonLine(const std::string& json, std::string& err) {
             err = "send returned 0";
             return false;
         }
-        sent += static_cast<std::size_t>(n);
+        sent += static_cast<size_t>(n);
+    }
+    return true;
+}
+
+bool ServerClient::readPacket(MessageType& type, std::string& body, std::string& err) {
+    body.clear();
+    if (sockfd_ < 0) {
+        err = "not connected";
+        return false;
+    }
+
+    uint8_t header[5];
+    if (!recvAll(header, sizeof(header), err)) {
+        return false;
+    }
+
+    type = static_cast<MessageType>(header[0]);
+
+    uint32_t len_be = 0;
+    std::memcpy(&len_be, header + 1, sizeof(len_be));
+    const uint32_t len = ntohl(len_be);
+
+    if (len > MAX_BODY_LEN) {
+        err = "packet body too large";
+        return false;
+    }
+
+    if (len == 0) {
+        return true;
+    }
+
+    body.resize(len);
+    return recvAll(reinterpret_cast<uint8_t*>(&body[0]), len, err);
+}
+
+bool ServerClient::sendPacket(MessageType type, const std::string& body, std::string& err) {
+    if (sockfd_ < 0) {
+        err = "not connected";
+        return false;
+    }
+
+    if (body.size() > MAX_BODY_LEN) {
+        err = "packet body too large";
+        return false;
+    }
+
+    uint8_t header[5];
+    header[0] = static_cast<uint8_t>(type);
+
+    const uint32_t len_be = htonl(static_cast<uint32_t>(body.size()));
+    std::memcpy(header + 1, &len_be, sizeof(len_be));
+
+    if (!sendAll(header, sizeof(header), err)) {
+        return false;
+    }
+
+    if (!body.empty()) {
+        return sendAll(reinterpret_cast<const uint8_t*>(body.data()), body.size(), err);
     }
 
     return true;

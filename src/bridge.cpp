@@ -1,6 +1,7 @@
 #include "bridge.h"
 #include "stm32_proto.h"
 
+#include <algorithm>
 #include <chrono>
 #include <ctime>
 #include <iomanip>
@@ -13,7 +14,7 @@ bool Logger::open(const std::string& path) {
     ofs_.open(path, std::ios::app);
     return ofs_.is_open();
 }
-//
+
 void Logger::log(const std::string& level, const std::string& msg) {
     std::lock_guard<std::mutex> lock(mu_);
 
@@ -61,39 +62,38 @@ void Bridge::run() {
             logger_.log("INFO", "server connected");
         }
 
-        std::string line;
+        MessageType type = MessageType::FAIL;
+        std::string body;
         std::string err;
-        if (!server_.readLine(line, err)) {
-            logger_.log("ERROR", "server read fail: " + err);
+        if (!server_.readPacket(type, body, err)) {
+            logger_.log("ERROR", "server read packet fail: " + err);
             server_.close();
             continue;
         }
 
-        if (!handleServerLine(line)) {
-            logger_.log("ERROR", "failed to handle command line: " + line);
+        if (!handleServerPacket(type, body)) {
+            logger_.log("ERROR", "failed to handle server packet");
         }
     }
 }
 
-bool Bridge::handleServerLine(const std::string& line) {
-    std::string type;
-    std::string cmd;
-    if (!parseServerCommand(line, type, cmd)) {
-        return sendServerError("invalid command json");
-    }
-
-    if (type == "motor") {
+bool Bridge::handleServerPacket(MessageType type, const std::string& body) {
+    if (type == MessageType::DEVICE) {
+        std::string cmd;
+        if (!parseMotorCmdJson(body, cmd)) {
+            return sendServerError("invalid DEVICE body json");
+        }
         if (!validMotorCmd(cmd)) {
             return sendServerError("invalid motor cmd");
         }
         return handleMotorCmd(cmd);
     }
 
-    if (type == "status_req") {
+    if (type == MessageType::AVAILABLE) {
         return handleStatusReq();
     }
 
-    return sendServerError("unknown type");
+    return sendServerError("unsupported message type");
 }
 
 bool Bridge::handleMotorCmd(const std::string& cmd) {
@@ -118,15 +118,14 @@ bool Bridge::handleMotorCmd(const std::string& cmd) {
     }
 
     const std::string out = "{" +
-        jsonStrField("type", "motor_ack") + "," +
         jsonIntField("ok", ack->ok) + "," +
         jsonStrField("mode", ack->mode) + "," +
         jsonStrField("cmd", ack->cmd) +
         "}";
 
     std::string err;
-    if (!server_.sendJsonLine(out, err)) {
-        logger_.log("ERROR", "server send motor_ack fail: " + err);
+    if (!server_.sendPacket(MessageType::ACK, out, err)) {
+        logger_.log("ERROR", "server send ACK fail: " + err);
         server_.close();
         return false;
     }
@@ -156,7 +155,6 @@ bool Bridge::handleStatusReq() {
     }
 
     const std::string out = "{" +
-        jsonStrField("type", "status") + "," +
         jsonNumField("tmp", st->tmp) + "," +
         jsonNumField("hum", st->hum) + "," +
         jsonStrField("dir", st->dir) + "," +
@@ -164,8 +162,8 @@ bool Bridge::handleStatusReq() {
         "}";
 
     std::string err;
-    if (!server_.sendJsonLine(out, err)) {
-        logger_.log("ERROR", "server send status fail: " + err);
+    if (!server_.sendPacket(MessageType::AVAILABLE, out, err)) {
+        logger_.log("ERROR", "server send AVAILABLE fail: " + err);
         server_.close();
         return false;
     }
@@ -176,13 +174,12 @@ bool Bridge::handleStatusReq() {
 
 bool Bridge::sendServerError(const std::string& reason) {
     const std::string out = "{" +
-        jsonStrField("type", "error") + "," +
         jsonStrField("reason", reason) +
         "}";
 
     std::string err;
-    if (!server_.sendJsonLine(out, err)) {
-        logger_.log("ERROR", "server send error fail: " + err);
+    if (!server_.sendPacket(MessageType::FAIL, out, err)) {
+        logger_.log("ERROR", "server send FAIL fail: " + err);
         server_.close();
         return false;
     }
@@ -217,29 +214,28 @@ std::string Bridge::jsonIntField(const std::string& key, int val) {
     return "\"" + key + "\":" + std::to_string(val);
 }
 
-bool Bridge::parseServerCommand(const std::string& line, std::string& type, std::string& cmd) {
-    const std::regex type_re("\\\"type\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
+bool Bridge::parseMotorCmdJson(const std::string& body, std::string& cmd) {
+    // Accept both {"motor":"w"} and {"cmd":"w"}
+    const std::regex motor_re("\\\"motor\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
     std::smatch m;
-    if (!std::regex_search(line, m, type_re) || m.size() < 2) {
-        return false;
-    }
-    type = m[1].str();
-
-    if (type == "motor") {
-        const std::regex cmd_re("\\\"cmd\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
-        std::smatch cm;
-        if (!std::regex_search(line, cm, cmd_re) || cm.size() < 2) {
-            return false;
-        }
-        cmd = cm[1].str();
+    if (std::regex_search(body, m, motor_re) && m.size() >= 2) {
+        cmd = m[1].str();
+        return true;
     }
 
-    return true;
+    const std::regex cmd_re("\\\"cmd\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
+    std::smatch c;
+    if (std::regex_search(body, c, cmd_re) && c.size() >= 2) {
+        cmd = c[1].str();
+        return true;
+    }
+
+    return false;
 }
 
 bool Bridge::validMotorCmd(const std::string& cmd) {
     static const std::set<std::string> allowed = {
-        "w", "a", "s", "d", "auto", "manual", "on", "off", "o", "f"
+        "w", "a", "s", "d", "auto", "manual", "on", "off"
     };
     return allowed.find(cmd) != allowed.end();
 }

@@ -10,7 +10,7 @@
 struct BridgeConfig {
     std::string serial_port = "/dev/serial0";
     int serial_baud = 115200;
-
+//192.168.0.58
     std::string server_host = "127.0.0.1";
     uint16_t server_port = 9000;
 
@@ -38,7 +38,7 @@ public:
     void run();
 
 private:
-    bool handleServerLine(const std::string& line);
+    bool handleServerPacket(MessageType type, const std::string& body);
     bool handleMotorCmd(const std::string& cmd);
     bool handleStatusReq();
 
@@ -49,7 +49,7 @@ private:
     static std::string jsonNumField(const std::string& key, double val);
     static std::string jsonIntField(const std::string& key, int val);
 
-    static bool parseServerCommand(const std::string& line, std::string& type, std::string& cmd);
+    static bool parseMotorCmdJson(const std::string& body, std::string& cmd);
     static bool validMotorCmd(const std::string& cmd);
 
     BridgeConfig cfg_;
