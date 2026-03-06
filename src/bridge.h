@@ -48,12 +48,7 @@ private:
 
     bool sendServerError(const std::string& reason);
 
-    static std::string escapeJson(const std::string& s);
-    static std::string jsonStrField(const std::string& key, const std::string& val);
-    static std::string jsonNumField(const std::string& key, double val);
-    static std::string jsonIntField(const std::string& key, int val);
-
-    static bool parseMotorCmdJson(const std::string& body, std::string& cmd);
+    static bool parseMotorCmdJson(const std::string& body_json, std::string& cmd);
     static bool validMotorCmd(const std::string& cmd);
 
     BridgeConfig cfg_;

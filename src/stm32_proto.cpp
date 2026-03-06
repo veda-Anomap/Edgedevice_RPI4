@@ -1,7 +1,8 @@
 #include "stm32_proto.h"
 #include "uart_port.h"
+#include "json.hpp"
 
-#include <regex>
+using json = nlohmann::json;
 
 std::vector<uint8_t> Stm32Proto::buildFrame(uint8_t cmd, const std::string& payload_json) {
     const uint32_t len = static_cast<uint32_t>(payload_json.size());
@@ -33,6 +34,7 @@ bool Stm32Proto::readFrame(UartPort& uart, int timeout_ms, StmFrame& frame, std:
     }
 
     const uint8_t cmd = header[0];
+    // LEN is encoded in network (big-endian) order.
     const uint32_t len = (static_cast<uint32_t>(header[1]) << 24) |
                          (static_cast<uint32_t>(header[2]) << 16) |
                          (static_cast<uint32_t>(header[3]) << 8) |
@@ -58,71 +60,38 @@ bool Stm32Proto::readFrame(UartPort& uart, int timeout_ms, StmFrame& frame, std:
     return true;
 }
 
-std::optional<std::string> Stm32Proto::jsonString(const std::string& src, const std::string& key) {
-    const std::regex re("\\\"" + key + "\\\"\\s*:\\s*\\\"([^\\\"]*)\\\"");
-    std::smatch m;
-    if (!std::regex_search(src, m, re) || m.size() < 2) {
+std::optional<StatusData> Stm32Proto::parseStatusJson(const std::string& payload_json) {
+    const auto j = json::parse(payload_json, nullptr, false);
+    if (j.is_discarded() || !j.is_object()) {
         return std::nullopt;
     }
-    return m[1].str();
-}
 
-std::optional<double> Stm32Proto::jsonNumber(const std::string& src, const std::string& key) {
-    const std::regex re("\\\"" + key + "\\\"\\s*:\\s*(-?[0-9]+(?:\\.[0-9]+)?)");
-    std::smatch m;
-    if (!std::regex_search(src, m, re) || m.size() < 2) {
-        return std::nullopt;
-    }
-    try {
-        return std::stod(m[1].str());
-    } catch (...) {
-        return std::nullopt;
-    }
-}
-
-std::optional<int> Stm32Proto::jsonInt(const std::string& src, const std::string& key) {
-    const std::regex re("\\\"" + key + "\\\"\\s*:\\s*(-?[0-9]+)");
-    std::smatch m;
-    if (!std::regex_search(src, m, re) || m.size() < 2) {
-        return std::nullopt;
-    }
-    try {
-        return std::stoi(m[1].str());
-    } catch (...) {
-        return std::nullopt;
-    }
-}
-
-std::optional<StatusData> Stm32Proto::parseStatusJson(const std::string& json) {
-    auto tmp = jsonNumber(json, "tmp");
-    auto hum = jsonNumber(json, "hum");
-    auto dir = jsonString(json, "dir");
-    auto tilt = jsonNumber(json, "tilt");
-
-    if (!tmp || !hum || !dir || !tilt) {
-        return std::nullopt;
-    }
+    if (!j.contains("tmp") || !j.at("tmp").is_number()) return std::nullopt;
+    if (!j.contains("hum") || !j.at("hum").is_number()) return std::nullopt;
+    if (!j.contains("dir") || !j.at("dir").is_string()) return std::nullopt;
+    if (!j.contains("tilt") || !j.at("tilt").is_number()) return std::nullopt;
 
     StatusData d;
-    d.tmp = *tmp;
-    d.hum = *hum;
-    d.dir = *dir;
-    d.tilt = *tilt;
+    d.tmp = j.at("tmp").get<double>();
+    d.hum = j.at("hum").get<double>();
+    d.dir = j.at("dir").get<std::string>();
+    d.tilt = j.at("tilt").get<double>();
     return d;
 }
 
-std::optional<MotorAckData> Stm32Proto::parseMotorAckJson(const std::string& json) {
-    auto ok = jsonInt(json, "ok");
-    auto mode = jsonString(json, "mode");
-    auto cmd = jsonString(json, "cmd");
-
-    if (!ok || !mode || !cmd) {
+std::optional<MotorAckData> Stm32Proto::parseMotorAckJson(const std::string& payload_json) {
+    const auto j = json::parse(payload_json, nullptr, false);
+    if (j.is_discarded() || !j.is_object()) {
         return std::nullopt;
     }
 
+    if (!j.contains("ok") || !j.at("ok").is_number_integer()) return std::nullopt;
+    if (!j.contains("mode") || !j.at("mode").is_string()) return std::nullopt;
+    if (!j.contains("cmd") || !j.at("cmd").is_string()) return std::nullopt;
+
     MotorAckData d;
-    d.ok = *ok;
-    d.mode = *mode;
-    d.cmd = *cmd;
+    d.ok = j.at("ok").get<int>();
+    d.mode = j.at("mode").get<std::string>();
+    d.cmd = j.at("cmd").get<std::string>();
     return d;
 }

@@ -14,4 +14,5 @@ add_executable(stm_bridge
 )
 
 target_include_directories(stm_bridge PRIVATE src)
+target_include_directories(stm_bridge PRIVATE third_party)
 target_link_libraries(stm_bridge PRIVATE pthread)

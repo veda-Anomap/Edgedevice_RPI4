@@ -31,15 +31,12 @@ public:
     static constexpr uint8_t CMD_STATUS = 0x05;
     static constexpr uint32_t MAX_PAYLOAD = 4096;
 
+    // Build/parse UART frame: [CMD:1][LEN:4, BE][PAYLOAD:JSON bytes]
     static std::vector<uint8_t> buildFrame(uint8_t cmd, const std::string& payload_json);
     static bool sendFrame(UartPort& uart, uint8_t cmd, const std::string& payload_json);
     static bool readFrame(UartPort& uart, int timeout_ms, StmFrame& frame, std::string& err);
 
-    static std::optional<StatusData> parseStatusJson(const std::string& json);
-    static std::optional<MotorAckData> parseMotorAckJson(const std::string& json);
-
-private:
-    static std::optional<std::string> jsonString(const std::string& src, const std::string& key);
-    static std::optional<double> jsonNumber(const std::string& src, const std::string& key);
-    static std::optional<int> jsonInt(const std::string& src, const std::string& key);
+    // Parse STM JSON payloads; returns nullopt on parse/type/field validation failure.
+    static std::optional<StatusData> parseStatusJson(const std::string& payload_json);
+    static std::optional<MotorAckData> parseMotorAckJson(const std::string& payload_json);
 };

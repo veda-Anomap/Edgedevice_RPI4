@@ -15,6 +15,8 @@ stm_bridge/
   CMakeLists.txt
   config.json
   stm_bridge.service
+  third_party/
+    json.hpp
   src/
     main.cpp
     bridge.h
@@ -31,6 +33,17 @@ stm_bridge/
 ```
 
 `build/` 폴더는 빌드 산출물이므로 전달 필수는 아닙니다.
+`third_party/json.hpp`는 프로젝트에 포함된 JSON 파서(`nlohmann/json`)입니다.
+
+### 주요 파일 역할
+| 파일 | 역할 |
+|---|---|
+| `src/main.cpp` | 설정 로드 후 브리지 실행 진입점 |
+| `src/bridge.cpp` | 서버 패킷 ↔ STM32 UART 중계 핵심 로직 |
+| `src/server_client.cpp` | TCP 패킷 송수신(Type+Len+JSON) |
+| `src/uart_port.cpp` | UART 포트 오픈/설정/타임아웃 읽기 |
+| `src/stm32_proto.cpp` | STM32 프레임 빌드/파싱 + JSON payload 파싱 |
+| `tools/mock_tcp_server.py` | 로컬 TCP 프로토콜 테스트용 mock 서버 |
 
 ---
 
@@ -41,6 +54,8 @@ stm_bridge/
 sudo apt update
 sudo apt install -y build-essential cmake python3
 ```
+
+참고: JSON 라이브러리는 `third_party/json.hpp`로 포함되어 있어 별도 apt 설치가 필요 없습니다.
 
 ### 2-2. UART(serial0) 활성화 및 시리얼 콘솔 해제
 `/dev/serial0`를 앱이 사용하려면 로그인 콘솔이 점유하면 안 됩니다.

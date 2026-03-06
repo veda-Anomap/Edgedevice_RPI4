@@ -1,14 +1,15 @@
 #include "bridge.h"
 #include "stm32_proto.h"
+#include "json.hpp"
 
 #include <algorithm>
 #include <chrono>
 #include <ctime>
 #include <iomanip>
-#include <regex>
 #include <set>
-#include <sstream>
 #include <thread>
+
+using json = nlohmann::json;
 
 bool Logger::open(const std::string& path) {
     ofs_.open(path, std::ios::app);
@@ -49,6 +50,10 @@ bool Bridge::init() {
 void Bridge::run() {
     int backoff = cfg_.reconnect_initial_ms;
 
+    // Main loop:
+    // 1) keep TCP connection alive (reconnect with exponential backoff)
+    // 2) receive one server packet
+    // 3) relay to STM32 and send response packet back
     while (true) {
         if (!server_.isConnected()) {
             std::string err;
@@ -97,7 +102,8 @@ bool Bridge::handleServerPacket(MessageType type, const std::string& body) {
 }
 
 bool Bridge::handleMotorCmd(const std::string& cmd) {
-    const std::string payload = "{" + jsonStrField("motor", cmd) + "}";
+    // Server DEVICE -> STM32 CMD_MOTOR frame.
+    const std::string payload = json{{"motor", cmd}}.dump();
     if (!Stm32Proto::sendFrame(uart_, Stm32Proto::CMD_MOTOR, payload)) {
         return sendServerError("uart write motor failed");
     }
@@ -117,11 +123,11 @@ bool Bridge::handleMotorCmd(const std::string& cmd) {
         return sendServerError("invalid motor ack json");
     }
 
-    const std::string out = "{" +
-        jsonIntField("ok", ack->ok) + "," +
-        jsonStrField("mode", ack->mode) + "," +
-        jsonStrField("cmd", ack->cmd) +
-        "}";
+    const std::string out = json{
+        {"ok", ack->ok},
+        {"mode", ack->mode},
+        {"cmd", ack->cmd}
+    }.dump();
 
     std::string err;
     if (!server_.sendPacket(MessageType::ACK, out, err)) {
@@ -135,6 +141,7 @@ bool Bridge::handleMotorCmd(const std::string& cmd) {
 }
 
 bool Bridge::handleStatusReq() {
+    // Server AVAILABLE request -> STM32 CMD_STATUS frame.
     if (!Stm32Proto::sendFrame(uart_, Stm32Proto::CMD_STATUS, "")) {
         return sendServerError("uart write status_req failed");
     }
@@ -154,12 +161,12 @@ bool Bridge::handleStatusReq() {
         return sendServerError("invalid status json");
     }
 
-    const std::string out = "{" +
-        jsonNumField("tmp", st->tmp) + "," +
-        jsonNumField("hum", st->hum) + "," +
-        jsonStrField("dir", st->dir) + "," +
-        jsonNumField("tilt", st->tilt) +
-        "}";
+    const std::string out = json{
+        {"tmp", st->tmp},
+        {"hum", st->hum},
+        {"dir", st->dir},
+        {"tilt", st->tilt}
+    }.dump();
 
     std::string err;
     if (!server_.sendPacket(MessageType::AVAILABLE, out, err)) {
@@ -173,9 +180,7 @@ bool Bridge::handleStatusReq() {
 }
 
 bool Bridge::sendServerError(const std::string& reason) {
-    const std::string out = "{" +
-        jsonStrField("reason", reason) +
-        "}";
+    const std::string out = json{{"reason", reason}}.dump();
 
     std::string err;
     if (!server_.sendPacket(MessageType::FAIL, out, err)) {
@@ -188,45 +193,20 @@ bool Bridge::sendServerError(const std::string& reason) {
     return false;
 }
 
-std::string Bridge::escapeJson(const std::string& s) {
-    std::string out;
-    out.reserve(s.size());
-    for (char c : s) {
-        if (c == '\\') out += "\\\\";
-        else if (c == '"') out += "\\\"";
-        else if (c == '\n') out += "\\n";
-        else out += c;
+bool Bridge::parseMotorCmdJson(const std::string& body_json, std::string& cmd) {
+    // Accept both {"motor":"w"} and {"cmd":"w"}.
+    const auto j = json::parse(body_json, nullptr, false);
+    if (j.is_discarded() || !j.is_object()) {
+        return false;
     }
-    return out;
-}
 
-std::string Bridge::jsonStrField(const std::string& key, const std::string& val) {
-    return "\"" + key + "\":\"" + escapeJson(val) + "\"";
-}
-
-std::string Bridge::jsonNumField(const std::string& key, double val) {
-    std::ostringstream oss;
-    oss << "\"" << key << "\":" << val;
-    return oss.str();
-}
-
-std::string Bridge::jsonIntField(const std::string& key, int val) {
-    return "\"" + key + "\":" + std::to_string(val);
-}
-
-bool Bridge::parseMotorCmdJson(const std::string& body, std::string& cmd) {
-    // Accept both {"motor":"w"} and {"cmd":"w"}
-    const std::regex motor_re("\\\"motor\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
-    std::smatch m;
-    if (std::regex_search(body, m, motor_re) && m.size() >= 2) {
-        cmd = m[1].str();
+    if (j.contains("motor") && j.at("motor").is_string()) {
+        cmd = j.at("motor").get<std::string>();
         return true;
     }
 
-    const std::regex cmd_re("\\\"cmd\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
-    std::smatch c;
-    if (std::regex_search(body, c, cmd_re) && c.size() >= 2) {
-        cmd = c[1].str();
+    if (j.contains("cmd") && j.at("cmd").is_string()) {
+        cmd = j.at("cmd").get<std::string>();
         return true;
     }
 

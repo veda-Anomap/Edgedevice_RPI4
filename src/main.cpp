@@ -1,11 +1,13 @@
 #include "bridge.h"
+#include "json.hpp"
 
 #include <fstream>
 #include <iostream>
-#include <regex>
 #include <string>
 
 namespace {
+
+using json = nlohmann::json;
 
 std::string readAll(const std::string& path) {
     std::ifstream ifs(path);
@@ -15,47 +17,60 @@ std::string readAll(const std::string& path) {
     return std::string((std::istreambuf_iterator<char>(ifs)), std::istreambuf_iterator<char>());
 }
 
-bool parseString(const std::string& src, const std::string& key, std::string& out) {
-    std::regex re("\\\"" + key + "\\\"\\s*:\\s*\\\"([^\\\"]*)\\\"");
-    std::smatch m;
-    if (!std::regex_search(src, m, re) || m.size() < 2) {
-        return false;
-    }
-    out = m[1].str();
-    return true;
-}
-
-bool parseInt(const std::string& src, const std::string& key, int& out) {
-    std::regex re("\\\"" + key + "\\\"\\s*:\\s*([0-9]+)");
-    std::smatch m;
-    if (!std::regex_search(src, m, re) || m.size() < 2) {
-        return false;
-    }
-    try {
-        out = std::stoi(m[1].str());
-        return true;
-    } catch (...) {
-        return false;
-    }
-}
-
-bool loadConfig(const std::string& path, BridgeConfig& cfg) {
+bool loadConfig(const std::string& path, BridgeConfig& cfg, std::string& err) {
     const std::string content = readAll(path);
     if (content.empty()) {
+        err = "config file open/read failed";
         return false;
     }
 
-    std::string s;
-    int n;
+    const json j = json::parse(content, nullptr, false);
+    if (j.is_discarded() || !j.is_object()) {
+        err = "config json parse failed";
+        return false;
+    }
 
-    if (parseString(content, "serial_port", s)) cfg.serial_port = s;
-    if (parseInt(content, "serial_baud", n)) cfg.serial_baud = n;
-    if (parseString(content, "server_host", s)) cfg.server_host = s;
-    if (parseInt(content, "server_port", n)) cfg.server_port = static_cast<uint16_t>(n);
-    if (parseInt(content, "uart_timeout_ms", n)) cfg.uart_timeout_ms = n;
-    if (parseInt(content, "reconnect_initial_ms", n)) cfg.reconnect_initial_ms = n;
-    if (parseInt(content, "reconnect_max_ms", n)) cfg.reconnect_max_ms = n;
-    if (parseString(content, "log_file", s)) cfg.log_file = s;
+    // Policy: keep defaults from BridgeConfig, and override only when valid typed keys exist.
+    auto setString = [&](const char* key, std::string& out) -> bool {
+        if (!j.contains(key)) {
+            return true;
+        }
+        if (!j.at(key).is_string()) {
+            err = std::string("invalid type for key: ") + key;
+            return false;
+        }
+        out = j.at(key).get<std::string>();
+        return true;
+    };
+
+    auto setInt = [&](const char* key, int& out) -> bool {
+        if (!j.contains(key)) {
+            return true;
+        }
+        if (!j.at(key).is_number_integer()) {
+            err = std::string("invalid type for key: ") + key;
+            return false;
+        }
+        out = j.at(key).get<int>();
+        return true;
+    };
+
+    if (!setString("serial_port", cfg.serial_port)) return false;
+    if (!setInt("serial_baud", cfg.serial_baud)) return false;
+    if (!setString("server_host", cfg.server_host)) return false;
+
+    int server_port = static_cast<int>(cfg.server_port);
+    if (!setInt("server_port", server_port)) return false;
+    if (server_port < 1 || server_port > 65535) {
+        err = "server_port out of range";
+        return false;
+    }
+    cfg.server_port = static_cast<uint16_t>(server_port);
+
+    if (!setInt("uart_timeout_ms", cfg.uart_timeout_ms)) return false;
+    if (!setInt("reconnect_initial_ms", cfg.reconnect_initial_ms)) return false;
+    if (!setInt("reconnect_max_ms", cfg.reconnect_max_ms)) return false;
+    if (!setString("log_file", cfg.log_file)) return false;
 
     return true;
 }
@@ -69,9 +84,11 @@ int main(int argc, char** argv) {
         config_path = argv[1];
     }
 
+    // Entry flow: load config -> initialize bridge resources -> run bridge loop.
     BridgeConfig cfg;
-    if (!loadConfig(config_path, cfg)) {
-        std::cerr << "Failed to load config: " << config_path << '\n';
+    std::string err;
+    if (!loadConfig(config_path, cfg, err)) {
+        std::cerr << "Failed to load config: " << config_path << " (" << err << ")\n";
         return 1;
     }
 
