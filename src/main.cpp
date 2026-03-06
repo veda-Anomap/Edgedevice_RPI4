@@ -63,6 +63,7 @@ bool loadConfig(const std::string& path, BridgeConfig& cfg) {
 } // namespace
 
 int main(int argc, char** argv) {
+    // [CUSTOM] 기본 설정 파일 경로. 필요 시 실행 인자로 다른 경로를 전달.
     std::string config_path = "./config.json";
     if (argc > 1) {
         config_path = argv[1];

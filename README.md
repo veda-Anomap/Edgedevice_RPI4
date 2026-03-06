@@ -134,6 +134,20 @@ cmake --build build -j
 }
 ```
 
+### 꼭 바꿔야 하는 항목 (CUSTOM REQUIRED)
+- `server_host`
+- `server_port`
+
+### 기존 STM32 환경이면 보통 그대로 써도 되는 항목 (CUSTOM OPTIONAL)
+- `serial_port` (`/dev/serial0` 유지)
+- `serial_baud` (`115200` 유지)
+
+### 환경에 따라 조정하는 항목 (CUSTOM OPTIONAL)
+- `uart_timeout_ms`
+- `reconnect_initial_ms`
+- `reconnect_max_ms`
+- `log_file`
+
 항목 설명:
 - `serial_port`: STM32 연결 UART 장치(기본 `/dev/serial0`)
 - `serial_baud`: STM32 펌웨어와 동일해야 함(기본 115200)

@@ -8,16 +8,20 @@
 #include <string>
 
 struct BridgeConfig {
+    // [CUSTOM-OPTIONAL] STM32가 기존 /dev/serial0 + 115200이면 수정 불필요
     std::string serial_port = "/dev/serial0";
     int serial_baud = 115200;
-//192.168.0.58
+
+    // [CUSTOM-REQUIRED] 실제 서버 주소/포트로 변경해서 사용
     std::string server_host = "127.0.0.1";
     uint16_t server_port = 9000;
 
+    // [CUSTOM-OPTIONAL] 환경에 따라 timeout/backoff만 조정
     int uart_timeout_ms = 1000;
     int reconnect_initial_ms = 500;
     int reconnect_max_ms = 10000;
 
+    // [CUSTOM-OPTIONAL] 운영 환경에 맞는 로그 경로로 변경 가능
     std::string log_file = "./stm_bridge.log";
 };
 
