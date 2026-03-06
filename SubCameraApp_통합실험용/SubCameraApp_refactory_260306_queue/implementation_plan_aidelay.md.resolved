@@ -1,0 +1,74 @@
+# AI Inference Delay Resolution Plan
+
+This document outlines the three main suspected bottlenecks causing delays in the AI inference pipeline and provides concrete solutions to resolve them.
+
+## 1. Result Mutex Contention (결과 공유 Mutex 경합)
+
+**Problematic Code:**
+```cpp
+// StreamPipeline.cpp (aiWorkerLoop)
+{
+  std::lock_guard<std::mutex> lock(result_mutex_); // 락 점유
+  shared_result_ = local_result;
+}
+
+// StreamPipeline.cpp (cameraLoop)
+{
+  std::lock_guard<std::mutex> lock(result_mutex_); // 락 대기 및 점유
+  renderer_.drawDetections(display_frame, shared_result_);
+}
+```
+
+**Issue:**
+The [cameraLoop](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/stream/StreamPipeline.cpp#236-304) (running at 30 FPS) continuously attempts to lock `result_mutex_` to draw boxes on the frame. Simultaneously, the [aiWorkerLoop](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/stream/StreamPipeline.cpp#146-235) locks it whenever an inference is completed. While the critical sections are small, high CPU usage by XNNPACK can cause the OS scheduler to delay thread execution while holding the lock, causing intermittent stuttering in the camera feed.
+
+**Solution:**
+Use an atomic pointer block or a lock-free structure, or simply minimize the time by doing a swift swap. However, since the current scope is already very localized, the best way to reduce contention is to reduce the frequency of AI updates or use `std::shared_ptr` swapping for `DetectionResult` so that reading requires zero locking (or only momentary atomic assignment). Currently, the contention is minor but exacerbated by CPU throttling.
+
+## 2. Queue Push Stalling (컨텍스트 스위칭 및 불필요한 푸시)
+
+**Problematic Code:**
+```cpp
+// StreamPipeline.cpp (cameraLoop)
+frame_queue_.push(frame); // 매 프레임(30번/초) 큐에 밀어넣고 cond_.notify_one() 호출
+
+// StreamPipeline.cpp (aiWorkerLoop)
+if (!frame_queue_.wait_and_pop(target_frame, ...)) { ... }
+
+static int ai_frame_counter = 0;
+if (++ai_frame_counter % AppConfig::AI_INFERENCE_INTERVAL != 0) {
+  continue; // 기껏 꺼내서 버림
+}
+```
+
+**Issue:**
+The camera thread blindly pushes 30 frames per second into the [ThreadSafeQueue](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/util/ThreadSafeQueue.h#17-18), acquiring `queue_mutex` and waking up the AI thread via `notify_one()` every single time. The AI thread wakes up, acquires the lock, pops the frame, and *then* checks if it should skip it. If it skips, it goes right back to sleeping. This creates massive unnecessary context-switching overhead and lock contention.
+
+**Solution (The most impactful fix):**
+Move the `AI_INFERENCE_INTERVAL` logic to the *producer* side ([cameraLoop](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/stream/StreamPipeline.cpp#236-304)). Only push frames to the AI queue when it is actually time for inference.
+
+*Proposed Fix:*
+```cpp
+// StreamPipeline.cpp (cameraLoop)
+static int ai_feed_counter = 0;
+if (++ai_feed_counter % AppConfig::AI_INFERENCE_INTERVAL == 0) {
+    frame_queue_.push(frame); // 필요한 프레임만 AI에게 전달!
+}
+```
+Remove the skip logic from [aiWorkerLoop](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/stream/StreamPipeline.cpp#146-235) entirely so it processes everything it receives immediately.
+
+## 3. Disconnect Between Timeline and Frame Index (동기화 붕괴)
+
+**Problematic Code:**
+```cpp
+// StreamPipeline.cpp (aiWorkerLoop)
+// (기존 스킵 로직)
+static int ai_frame_counter = 0;
+if (++ai_frame_counter % AppConfig::AI_INFERENCE_INTERVAL != 0) { ... }
+```
+
+**Issue:**
+Because the AI thread is slow (e.g., handles 6 frames per second), the [cameraLoop](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/stream/StreamPipeline.cpp#236-304) is constantly overwriting the single-item queue. The [aiWorkerLoop](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/stream/StreamPipeline.cpp#146-235) pops a frame that might correspond to `camera_frame #10`, increments its *own* local counter, and processes it. The next time it pops, it might get `camera_frame #15`. The AI is blindly counting 1, 2, 3 based on what it popped, *not* based on the real-time flow of the video. This makes the `AI_INFERENCE_INTERVAL` behave unpredictably (e.g., processing frame #10, and then #15, skipping real-world time inconsistently).
+
+**Solution:**
+By implementing the fix from **Section 2** (moving the sampling logic to the [cameraLoop](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/stream/StreamPipeline.cpp#236-304)), the camera thread (which operates in real-time at exactly 30 FPS) will dictate the strict interval. The AI will receive a strictly downsampled, predictable stream of frames.

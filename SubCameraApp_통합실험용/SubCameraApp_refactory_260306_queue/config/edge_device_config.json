@@ -1,0 +1,10 @@
+{
+  "serial_port": "/dev/serial0",
+  "serial_baud": 115200,
+  "server_host": "192.168.0.58",
+  "server_port": 5000,
+  "uart_timeout_ms": 1000,
+  "reconnect_initial_ms": 500,
+  "reconnect_max_ms": 10000,
+  "log_file": "./stm_bridge.log"
+}

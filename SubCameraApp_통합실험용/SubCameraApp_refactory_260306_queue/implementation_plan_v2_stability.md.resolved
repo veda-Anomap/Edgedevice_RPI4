@@ -1,0 +1,53 @@
+# Implementation Plan: Long-term Stability & Memory Safety
+
+## Problem Description
+Long-running sessions (e.g., several hours) occasionally trigger a `std::queue::front()` assertion failure in the GStreamer `libcamerasrc` plugin (`std::unique_ptr<RequestWrap>`). 
+This is likely caused by system stress due to:
+1.  **Memory Exhaustion**: The [EventRecorder](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/buffer/EventRecorder.cpp#6-14) has an unbounded `pending_events_` queue. Frequent AI detections (noisy environment) can cause memory usage to grow without limit, especially if network transmission is slow.
+2.  **Resource Contention**: High AI load coupled with memory pressure leads to driver-level timeouts and internal GStreamer state corruption.
+
+## Proposed Changes
+
+### Event Recording Management (Memory Safety)
+
+#### [MODIFY] [EventRecorder.h](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/buffer/EventRecorder.h)
+- Add `MAX_PENDING_EVENTS` constant (e.g., 5).
+- Add a mechanism to check queue size before pushing.
+
+#### [MODIFY] [EventRecorder.cpp](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/buffer/EventRecorder.cpp)
+- Update [triggerEvent()](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/buffer/EventRecorder.cpp#21-37) to drop the event if `pending_events_.size() >= MAX_PENDING_EVENTS`.
+- Add logging for dropped events.
+
+---
+
+### AI Detection Cooldown (Stability)
+
+#### [MODIFY] [AppConfig.h](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/config/AppConfig.h)
+- Add `EVENT_COOLDOWN_SEC` (e.g., 5 seconds).
+
+#### [MODIFY] [StreamPipeline.cpp](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/stream/StreamPipeline.cpp)
+- Implement a per-track cooldown timer. Even if the AI still detects "falling", don't trigger a new recording until the cooldown expires.
+
+---
+
+### Monitoring & Diagnostics
+
+#### [MODIFY] [SystemResourceMonitor.h](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/system/SystemResourceMonitor.h)
+- Add `pending_event_count` to [DeviceStatus](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/system/IResourceMonitor.h#10-24) struct.
+
+#### [MODIFY] [SubCamController.cpp](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/controller/SubCamController.cpp)
+- Pass the [EventRecorder](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/buffer/EventRecorder.cpp#6-14)'s current queue size to the monitor or directly into the network facade.
+
+#### [MODIFY] [NetworkFacade.cpp](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/network/NetworkFacade.cpp)
+- Include the `pending_events` count in the `AVAILABLE` (0x05) JSON payload.
+
+## Verification Plan
+
+### Automated Tests
+- Run the system with a "noisy" AI mock that triggers falls every second.
+- Monitor memory usage via [top](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/network/NetworkFacade.cpp#35-42) or the `AVAILABLE` network packets.
+- Verify that memory usage stays capped as events are dropped.
+
+### Manual Verification
+- Long-run soak test (8+ hours) on a Raspberry Pi 4.
+- Verify that the `RequestWrap` assertion does not occur even during high load.

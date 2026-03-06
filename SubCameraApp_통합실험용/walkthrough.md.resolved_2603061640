@@ -1,0 +1,109 @@
+# Edgedevice_RPI4 → SubCameraApp 통합 Walkthrough
+
+## 변경 요약
+
+Edgedevice_RPI4의 STM32 UART 브릿지 기능을 SubCameraApp 프로세스 내에 독립 모듈로 통합했습니다. **기존 SubCameraApp 로직은 변경 없이** 유지됩니다.
+
+## 프로젝트 구조
+
+```
+SubCameraApp_refactory_260306_queue/
+├── config/
+│   ├── AppConfig.h                     (기존 - 변경 없음)
+│   └── edge_device_config.json         ✨ NEW
+├── third_party/nlohmann/json.hpp       ✨ NEW
+├── src/
+│   ├── controller/
+│   │   ├── SubCamController.h          📝 수정 (멤버 추가)
+│   │   └── SubCamController.cpp        📝 수정 (초기화/종료)
+│   ├── edge_device/                    ✨ NEW 전체 폴더
+│   │   ├── EdgeBridgeModule.h/cpp      래퍼 (start/stop)
+│   │   ├── bridge.h/cpp                브릿지 (stop_flag 지원)
+│   │   ├── server_client.h/cpp         TCP 클라이언트
+│   │   ├── uart_port.h/cpp             UART 통신
+│   │   └── stm32_proto.h/cpp           STM32 프로토콜
+│   └── ... (모두 변경 없음)
+└── CMakeLists.txt                      📝 수정
+```
+
+## 코드 리뷰 및 수정 사항
+
+검토 결과 **2개의 중요 문제를 발견하고 수정**했습니다:
+
+### 🔴 Fix 1: 종료 시 readerLoop 무한 대기 문제
+
+**문제:** [readerLoop](file:///c:/Users/1-16/Desktop/SubCameraApp_%ED%86%B5%ED%95%A9%EC%8B%A4%ED%97%98%EC%9A%A9/Edgedevice_RPI4/src/bridge.cpp#104-121)는 [::recv()](file:///c:/Users/1-16/Desktop/SubCameraApp_%ED%86%B5%ED%95%A9%EC%8B%A4%ED%97%98%EC%9A%A9/SubCameraApp_refactory_260306_queue/src/edge_device/server_client.cpp#67-92)에서 블로킹 상태로 대기함. `stop_flag`만 설정해서는 [recv()](file:///c:/Users/1-16/Desktop/SubCameraApp_%ED%86%B5%ED%95%A9%EC%8B%A4%ED%97%98%EC%9A%A9/SubCameraApp_refactory_260306_queue/src/edge_device/server_client.cpp#67-92)가 리턴하지 않아 스레드가 영원히 종료되지 않음.
+
+**수정:** `stop_flag` 트리거 시 `server_.close()` 호출 → `shutdown(SHUT_RDWR)`이 [recv()](file:///c:/Users/1-16/Desktop/SubCameraApp_%ED%86%B5%ED%95%A9%EC%8B%A4%ED%97%98%EC%9A%A9/SubCameraApp_refactory_260306_queue/src/edge_device/server_client.cpp#67-92)의 블로킹을 해제 → readerLoop가 에러로 탈출 → `reader.join()` 성공.
+
+```diff
+ if (stop_flag && stop_flag->load()) {
+     disconnected.store(true);
++    server_.close();  // readerLoop의 recv() 블로킹을 해제
+     queue_cv_.notify_all();
+     break;
+ }
+```
+
+### 🔴 Fix 2: EdgeBridgeModule::stop() 경합 조건
+
+**문제:** [threadFunc()](file:///c:/Users/1-16/Desktop/SubCameraApp_%ED%86%B5%ED%95%A9%EC%8B%A4%ED%97%98%EC%9A%A9/SubCameraApp_refactory_260306_queue/src/edge_device/EdgeBridgeModule.cpp#142-146)이 `running_ = false`를 설정한 후 [stop()](file:///c:/Users/1-16/Desktop/SubCameraApp_%ED%86%B5%ED%95%A9%EC%8B%A4%ED%97%98%EC%9A%A9/SubCameraApp_refactory_260306_queue/src/network/NetworkFacade.cpp#35-42)이 호출되면, `if (!running_.load()) return;` 가드가 통과하지 못해 `thread_.join()`이 호출되지 않고, bridge_ 리소스도 정리되지 않음.
+
+**수정:** `running_` 대신 `thread_.joinable()`로 가드.
+
+```diff
+ void EdgeBridgeModule::stop() {
+-    if (!running_.load()) return;
++    if (!thread_.joinable()) return;
+```
+
+### ✅ 안전성 확인 완료 항목
+
+| 항목 | 상태 | 근거 |
+|------|------|------|
+| **소켓 이중 close** | ✅ 안전 | `sockfd_.exchange(-1)` 원자 연산으로 한 번만 실행 |
+| **네임스페이스 충돌** | ✅ 안전 | `edge_device::MessageType`으로 분리 |
+| **패킷 큐 오버플로** | ✅ 안전 | `MAX_PENDING_PACKETS=256` 제한, 초과 시 oldest 드롭 |
+| **로그 파일 스레드 안전** | ✅ 안전 | `Logger::log()` 내부 mutex 보호 |
+| **UART 동시 접근** | ✅ 안전 | Bridge 내에서만 동기적으로 접근 |
+| **장애 격리** | ✅ 안전 | EdgeBridge 실패해도 카메라 기능 정상 동작 |
+
+### 📊 RPi4 리소스 영향 분석
+
+| 리소스 | EdgeBridge 사용량 | 기존 SubCameraApp | 영향 |
+|--------|-------------------|-------------------|------|
+| **스레드** | +2 (bridge main + reader) | ~5개 (main, command, beacon, monitor, stream) | 총 ~7개, RPi4 4코어에서 적정 |
+| **메모리** | ~2MB (패킷큐 + json 파싱) | ~수십MB (AI 모델 + 프레임) | 무시 가능 |
+| **FD** | +2 (TCP 소켓 + UART) | ~3 (server + listen + UDP) | 여유 충분 |
+| **CPU** | I/O 대기 위주 (idle) | AI 추론이 CPU 집중 | 영향 없음 |
+
+## 종료 흐름 (검증 완료)
+
+```
+SubCamController::stop()
+  → edge_bridge_->stop()
+    → stop_flag_ = true
+    → Bridge::run() 루프 내에서 stop_flag 감지
+      → server_.close()  ← recv() 블로킹 해제
+      → readerLoop 종료
+      → reader.join()
+      → Bridge::run() 리턴
+    → thread_.join() 성공
+    → bridge_.reset() (UART/서버/로그 정리)
+  → stream_pipeline_->stopStreaming()
+  → command_receiver_->stop()
+```
+
+## 빌드 및 실행
+
+```bash
+# RPI4에서 빌드
+cd SubCameraApp_refactory_260306_queue
+mkdir -p build && cd build
+cmake .. && make -j4
+
+# 실행 (기존과 동일)
+./subcam_main
+```
+
+[config/edge_device_config.json](file:///c:/Users/1-16/Desktop/SubCameraApp_%ED%86%B5%ED%95%A9%EC%8B%A4%ED%97%98%EC%9A%A9/SubCameraApp_refactory_260306_queue/config/edge_device_config.json)에서 서버/UART 설정 수정 가능.
