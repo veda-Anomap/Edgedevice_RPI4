@@ -4,6 +4,7 @@ RPi(라즈베리파이)와 STM32(UART), 서버(TCP) 사이를 중계하는 C++17
 
 - 서버 <-> RPi: TCP 바이너리 패킷
 - RPi <-> STM32: UART 프레임
+- 내부 처리: 서버 수신 스레드 + 처리 큐
 
 ---
 
@@ -39,11 +40,21 @@ stm_bridge/
 | 파일 | 역할 |
 |---|---|
 | `src/main.cpp` | 설정 로드 후 브리지 실행 진입점 |
-| `src/bridge.cpp` | 서버 패킷 ↔ STM32 UART 중계 핵심 로직 |
+| `src/bridge.cpp` | 서버 수신 스레드/큐 + 서버 패킷 ↔ STM32 UART 중계 핵심 로직 |
 | `src/server_client.cpp` | TCP 패킷 송수신(Type+Len+JSON) |
 | `src/uart_port.cpp` | UART 포트 오픈/설정/타임아웃 읽기 |
 | `src/stm32_proto.cpp` | STM32 프레임 빌드/파싱 + JSON payload 파싱 |
 | `tools/mock_tcp_server.py` | 로컬 TCP 프로토콜 테스트용 mock 서버 |
+
+---
+
+## 처리 동작 요약 (지연 완화)
+- 서버 패킷 수신은 전용 스레드가 담당하고, 처리 대상은 내부 큐에 저장됩니다.
+- STM32 요청/응답 처리는 메인 처리 루프가 담당합니다.
+- `DEVICE`, `AVAILABLE` 모두 수신 순서대로 큐에서 처리됩니다.
+- 큐가 가득 차면 가장 오래된 패킷부터 제거하고 로그를 남깁니다.
+
+이 구조로 UART ACK 대기 중에도 서버 수신 자체는 계속 진행되어, 소켓 수신 병목을 줄일 수 있습니다.
 
 ---
 

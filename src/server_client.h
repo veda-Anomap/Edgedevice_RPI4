@@ -1,5 +1,6 @@
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <string>
 
@@ -44,6 +45,6 @@ private:
     bool recvAll(uint8_t* dst, size_t bytes, std::string& err);
     bool sendAll(const uint8_t* src, size_t bytes, std::string& err);
 
-    int sockfd_;
+    std::atomic<int> sockfd_;
     static constexpr uint32_t MAX_BODY_LEN = 1024 * 1024;
 };

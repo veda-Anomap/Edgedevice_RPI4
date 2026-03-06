@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <chrono>
 #include <ctime>
+#include <functional>
 #include <iomanip>
 #include <set>
 #include <thread>
@@ -51,9 +52,9 @@ void Bridge::run() {
     int backoff = cfg_.reconnect_initial_ms;
 
     // Main loop:
-    // 1) keep TCP connection alive (reconnect with exponential backoff)
-    // 2) receive one server packet
-    // 3) relay to STM32 and send response packet back
+    // 1) establish TCP connection (with exponential backoff)
+    // 2) start reader thread (TCP recv -> queue)
+    // 3) process queued packets (queue -> UART -> TCP send)
     while (true) {
         if (!server_.isConnected()) {
             std::string err;
@@ -67,19 +68,77 @@ void Bridge::run() {
             logger_.log("INFO", "server connected");
         }
 
+        clearPendingPackets();
+        std::atomic<bool> disconnected{false};
+        std::thread reader(&Bridge::readerLoop, this, std::ref(disconnected));
+
+        while (true) {
+            PendingPacket pkt;
+            if (!popPacket(pkt, disconnected)) {
+                if (disconnected.load()) {
+                    break;
+                }
+                continue;
+            }
+
+            if (!handleServerPacket(pkt.type, pkt.body)) {
+                logger_.log("ERROR", "failed to handle server packet");
+            }
+        }
+
+        if (reader.joinable()) {
+            reader.join();
+        }
+
+        server_.close();
+    }
+}
+
+void Bridge::readerLoop(std::atomic<bool>& disconnected) {
+    while (!disconnected.load()) {
         MessageType type = MessageType::FAIL;
         std::string body;
         std::string err;
         if (!server_.readPacket(type, body, err)) {
             logger_.log("ERROR", "server read packet fail: " + err);
+            disconnected.store(true);
             server_.close();
-            continue;
+            queue_cv_.notify_all();
+            return;
         }
 
-        if (!handleServerPacket(type, body)) {
-            logger_.log("ERROR", "failed to handle server packet");
-        }
+        enqueuePacket(type, std::move(body));
     }
+}
+
+void Bridge::enqueuePacket(MessageType type, std::string body) {
+    std::lock_guard<std::mutex> lock(queue_mu_);
+
+    if (pending_packets_.size() >= MAX_PENDING_PACKETS) {
+        pending_packets_.pop_front();
+        logger_.log("ERROR", "packet queue overflow: dropped oldest packet");
+    }
+
+    pending_packets_.push_back(PendingPacket{type, std::move(body)});
+    queue_cv_.notify_one();
+}
+
+bool Bridge::popPacket(PendingPacket& out, const std::atomic<bool>& disconnected) {
+    std::unique_lock<std::mutex> lock(queue_mu_);
+    queue_cv_.wait(lock, [&] { return !pending_packets_.empty() || disconnected.load(); });
+
+    if (pending_packets_.empty()) {
+        return false;
+    }
+
+    out = std::move(pending_packets_.front());
+    pending_packets_.pop_front();
+    return true;
+}
+
+void Bridge::clearPendingPackets() {
+    std::lock_guard<std::mutex> lock(queue_mu_);
+    pending_packets_.clear();
 }
 
 bool Bridge::handleServerPacket(MessageType type, const std::string& body) {

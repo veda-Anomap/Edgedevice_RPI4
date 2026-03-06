@@ -3,9 +3,14 @@
 #include "server_client.h"
 #include "uart_port.h"
 
+#include <atomic>
+#include <cstddef>
+#include <condition_variable>
+#include <deque>
 #include <fstream>
 #include <mutex>
 #include <string>
+#include <thread>
 
 struct BridgeConfig {
     // [CUSTOM-OPTIONAL] STM32가 기존 /dev/serial0 + 115200이면 수정 불필요
@@ -42,6 +47,16 @@ public:
     void run();
 
 private:
+    struct PendingPacket {
+        MessageType type = MessageType::FAIL;
+        std::string body;
+    };
+
+    void readerLoop(std::atomic<bool>& disconnected);
+    void enqueuePacket(MessageType type, std::string body);
+    bool popPacket(PendingPacket& out, const std::atomic<bool>& disconnected);
+    void clearPendingPackets();
+
     bool handleServerPacket(MessageType type, const std::string& body);
     bool handleMotorCmd(const std::string& cmd);
     bool handleStatusReq();
@@ -55,4 +70,9 @@ private:
     ServerClient server_;
     UartPort uart_;
     Logger logger_;
+
+    std::mutex queue_mu_;
+    std::condition_variable queue_cv_;
+    std::deque<PendingPacket> pending_packets_;
+    static constexpr size_t MAX_PENDING_PACKETS = 256;
 };

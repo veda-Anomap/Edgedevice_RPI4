@@ -37,7 +37,7 @@ bool ServerClient::connectTo(const std::string& host, uint16_t port, std::string
         }
 
         if (::connect(fd, p->ai_addr, p->ai_addrlen) == 0) {
-            sockfd_ = fd;
+            sockfd_.store(fd);
             freeaddrinfo(res);
             return true;
         }
@@ -51,21 +51,27 @@ bool ServerClient::connectTo(const std::string& host, uint16_t port, std::string
 }
 
 void ServerClient::close() {
-    if (sockfd_ >= 0) {
-        ::shutdown(sockfd_, SHUT_RDWR);
-        ::close(sockfd_);
-        sockfd_ = -1;
+    const int fd = sockfd_.exchange(-1);
+    if (fd >= 0) {
+        ::shutdown(fd, SHUT_RDWR);
+        ::close(fd);
     }
 }
 
 bool ServerClient::isConnected() const {
-    return sockfd_ >= 0;
+    return sockfd_.load() >= 0;
 }
 
 bool ServerClient::recvAll(uint8_t* dst, size_t bytes, std::string& err) {
+    const int fd = sockfd_.load();
+    if (fd < 0) {
+        err = "not connected";
+        return false;
+    }
+
     size_t got = 0;
     while (got < bytes) {
-        const ssize_t n = ::recv(sockfd_, dst + got, bytes - got, 0);
+        const ssize_t n = ::recv(fd, dst + got, bytes - got, 0);
         if (n < 0) {
             if (errno == EINTR) {
                 continue;
@@ -83,9 +89,15 @@ bool ServerClient::recvAll(uint8_t* dst, size_t bytes, std::string& err) {
 }
 
 bool ServerClient::sendAll(const uint8_t* src, size_t bytes, std::string& err) {
+    const int fd = sockfd_.load();
+    if (fd < 0) {
+        err = "not connected";
+        return false;
+    }
+
     size_t sent = 0;
     while (sent < bytes) {
-        const ssize_t n = ::send(sockfd_, src + sent, bytes - sent, 0);
+        const ssize_t n = ::send(fd, src + sent, bytes - sent, 0);
         if (n < 0) {
             if (errno == EINTR) {
                 continue;
@@ -104,10 +116,6 @@ bool ServerClient::sendAll(const uint8_t* src, size_t bytes, std::string& err) {
 
 bool ServerClient::readPacket(MessageType& type, std::string& body, std::string& err) {
     body.clear();
-    if (sockfd_ < 0) {
-        err = "not connected";
-        return false;
-    }
 
     uint8_t header[5];
     if (!recvAll(header, sizeof(header), err)) {
@@ -134,11 +142,6 @@ bool ServerClient::readPacket(MessageType& type, std::string& body, std::string&
 }
 
 bool ServerClient::sendPacket(MessageType type, const std::string& body, std::string& err) {
-    if (sockfd_ < 0) {
-        err = "not connected";
-        return false;
-    }
-
     if (body.size() > MAX_BODY_LEN) {
         err = "packet body too large";
         return false;
