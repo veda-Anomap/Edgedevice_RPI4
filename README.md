@@ -42,6 +42,7 @@ stm_bridge/
 
 `build/` 폴더는 빌드 산출물이므로 전달 필수는 아닙니다.
 `third_party/json.hpp`는 프로젝트에 포함된 JSON 파서(`nlohmann/json`)입니다.
+`tools/mock_tcp_server.py`는 선택(테스트 전용) 파일입니다.
 
 ### 주요 파일 역할
 | 파일 | 역할 |
@@ -51,7 +52,7 @@ stm_bridge/
 | `src/server_client.cpp` | TCP 패킷 송수신(Type+Len+JSON) |
 | `src/uart_port.cpp` | UART 포트 오픈/설정/타임아웃 읽기 |
 | `src/stm32_proto.cpp` | STM32 프레임 빌드/파싱 + JSON payload 파싱 |
-| `tools/mock_tcp_server.py` | 로컬 TCP 프로토콜 테스트용 mock 서버 |
+| `tools/mock_tcp_server.py` | 로컬 TCP 프로토콜 테스트용 mock 서버 (선택) |
 
 ---
 
@@ -69,12 +70,19 @@ stm_bridge/
 ## 2) 새 라즈베리파이에서 최초 1회 설정
 
 ### 2-1. 패키지 설치
+운영 필수 패키지:
 ```bash
 sudo apt update
-sudo apt install -y build-essential cmake python3
+sudo apt install -y build-essential cmake
 ```
 
 참고: JSON 라이브러리는 `third_party/json.hpp`로 포함되어 있어 별도 apt 설치가 필요 없습니다.
+`python3`는 mock 서버 테스트를 할 때만 필요합니다(운영 필수 아님).
+
+테스트용 mock 서버를 쓸 경우에만:
+```bash
+sudo apt install -y python3
+```
 
 ### 2-2. UART(serial0) 활성화 및 시리얼 콘솔 해제
 `/dev/serial0`를 앱이 사용하려면 로그인 콘솔이 점유하면 안 됩니다.
@@ -346,8 +354,10 @@ sudo systemctl daemon-reload
 
 ---
 
-## 10) 로컬 테스트(서버 없이)
-Mock 서버를 띄워 브리지 TCP 프로토콜을 검증할 수 있습니다.
+## 10) (선택) 로컬 테스트(서버 없이)
+`tools/mock_tcp_server.py`는 개발/검증용 테스트 도구입니다.
+실제 구동(운영)에서는 필수가 아니며, 실제 서버가 있으면 사용하지 않아도 됩니다.
+Mock 서버를 띄워 브리지 TCP 프로토콜을 단독 검증할 때만 사용하세요.
 
 터미널 A:
 ```bash
