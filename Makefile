@@ -16,9 +16,12 @@ SRC = src/main.cpp \
       src/rendering/FrameRenderer.cpp \
       src/util/FrameSaver.cpp \
       src/imageprocessing/ImagePreprocessor.cpp \
+      src/imageprocessing/LowLightEnhancer.cpp \
+      src/imageprocessing/AdvancedEnhancers.cpp \
       src/buffer/CircularFrameBuffer.cpp \
       src/buffer/EventRecorder.cpp \
-      src/transmitter/ChunkedStreamTransmitter.cpp
+      src/transmitter/ChunkedStreamTransmitter.cpp \
+      src/system/SystemResourceMonitor.cpp
 
 OBJ = $(SRC:.cpp=.o)
 CXX = aarch64-linux-gnu-g++

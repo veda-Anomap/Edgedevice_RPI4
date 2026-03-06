@@ -68,30 +68,41 @@ void NetworkFacade::sendImage(const std::string &metadata,
   if (client_fd == -1)
     return;
 
-  // 전체 본문 크기 = JSON 길이 필드(4) + 메타데이터 바이트 + 이미지 바이트
-  uint32_t metadata_len = static_cast<uint32_t>(metadata.size());
-  uint32_t image_len = static_cast<uint32_t>(jpeg_data.size());
-  uint32_t total_body_len = sizeof(uint32_t) + metadata_len + image_len;
+  uint32_t json_len = static_cast<uint32_t>(metadata.size());
 
-  // 헤더 세팅
+  // 헤더 세팅: body_length = JSON 길이만 (서버 규격)
   PacketHeader header;
   header.type = MessageType::IMAGE;
-  header.body_length = htonl(total_body_len);
+  header.body_length = htonl(json_len);
 
   // 1. 헤더 (5 Byte) 전송
   send(client_fd, &header, sizeof(header), 0);
 
-  // 2. 메타데이터 크기 (4 Byte, Network Byte Order) 전송
-  uint32_t metadata_len_net = htonl(metadata_len);
-  send(client_fd, &metadata_len_net, sizeof(metadata_len_net), 0);
-
-  // 3. 메타데이터 전송
-  if (metadata_len > 0) {
-    send(client_fd, metadata.c_str(), metadata_len, 0);
+  // 2. JSON 메타데이터 전송 (json_len 바이트, '{' 로 시작)
+  if (json_len > 0) {
+    send(client_fd, metadata.c_str(), json_len, 0);
   }
 
-  // 4. 이미지 데이터 전송
-  if (image_len > 0) {
-    send(client_fd, jpeg_data.data(), image_len, 0);
+  // 3. JPEG 바이너리 전송 (서버는 JSON의 jpeg_size 필드로 길이를 알고 있음)
+  if (!jpeg_data.empty()) {
+    send(client_fd, jpeg_data.data(), jpeg_data.size(), 0);
+  }
+}
+
+void NetworkFacade::sendDeviceStatus(const DeviceStatus &status) {
+  int client_fd = command_server_->getClientSocketFd();
+  if (client_fd == -1)
+    return;
+
+  std::string json_str = status.toJson();
+  uint32_t body_len = static_cast<uint32_t>(json_str.size());
+
+  PacketHeader header;
+  header.type = MessageType::AVAILABLE; // 0x05
+  header.body_length = htonl(body_len);
+
+  send(client_fd, &header, sizeof(header), 0);
+  if (body_len > 0) {
+    send(client_fd, json_str.c_str(), body_len, 0);
   }
 }

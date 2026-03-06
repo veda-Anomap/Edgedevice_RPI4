@@ -6,10 +6,12 @@
 #include "../ai/PersonTracker.h"
 #include "../buffer/CircularFrameBuffer.h"
 #include "../buffer/EventRecorder.h"
+#include "../imageprocessing/IImageEnhancer.h"
 #include "../network/INetworkSender.h"
 #include "../rendering/FrameRenderer.h"
 #include "../util/FrameSaver.h"
 #include "ICamera.h"
+
 
 #include "../util/ThreadSafeQueue.h"
 #include <atomic>
@@ -33,7 +35,8 @@ public:
   StreamPipeline(ICamera &camera, IAiDetector &detector, INetworkSender &sender,
                  FrameRenderer &renderer, FrameSaver &saver,
                  CircularFrameBuffer &frame_buffer,
-                 EventRecorder &event_recorder);
+                 EventRecorder &event_recorder,
+                 IImageEnhancer *enhancer = nullptr);
   ~StreamPipeline();
 
   // 스트리밍 시작/중지
@@ -52,6 +55,7 @@ private:
   FrameSaver &saver_;
   CircularFrameBuffer &frame_buffer_;
   EventRecorder &event_recorder_;
+  IImageEnhancer *enhancer_;
 
   // 내부 소유 컴포넌트
   PersonTracker tracker_;

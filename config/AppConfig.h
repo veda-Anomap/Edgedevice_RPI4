@@ -18,6 +18,10 @@ constexpr int TCP_LISTEN_PORT = 5000;
 inline const std::string BEACON_MESSAGE = "SUB_PI_ALIVE";
 constexpr int BEACON_INTERVAL_SEC = 1;
 
+// --- 로컬 모니터링 (UI) 설정 ---
+constexpr bool ENABLE_DISPLAY =
+    false; // GUI 없는 환경(sudo, SSH)에서 실행 시 false 지정
+
 // --- 카메라 / 영상 설정 ---
 constexpr int FRAME_WIDTH = 640;
 constexpr int FRAME_HEIGHT = 480;
@@ -28,12 +32,15 @@ constexpr int BITRATE = 4000;
 
 // --- AI 모델 설정 ---
 constexpr int MODEL_INPUT_SIZE = 640;
-constexpr int NUM_THREADS = 4;
-inline const std::string MODEL_PATH = "yolo26n-pose_float32.tflite";
+constexpr int NUM_THREADS =
+    3; // RPi 4 코어(4개) 중 1개는 GStreamer/OS용으로 비워둠
+inline const std::string MODEL_PATH = "yolo26n-pose_int8.tflite";
 constexpr float CONFIDENCE_THRESHOLD = 0.5f;
 constexpr int MAX_DETECTIONS = 100;
 constexpr int DETECTION_STRIDE = 57; // 모델 출력 stride (per detection)
 constexpr int NUM_KEYPOINTS = 17;
+constexpr int AI_INFERENCE_INTERVAL =
+    5; // N프레임당 1번만 AI 연산 (CPU 부하 조절용, 기본 3)
 
 // --- 낙상 감지 임계값 ---
 constexpr float FALL_VELOCITY_THRESHOLD = 18.0f;
@@ -60,11 +67,12 @@ inline const std::vector<std::pair<int, int>> KPT_SKELETON = {
 inline const std::string CAPTURES_DIR = "captures";
 
 // --- [Phase 2] 이벤트 버퍼 설정 ---
-constexpr int PRE_EVENT_SEC = 2;  // 이벤트 전 녹화 시간 (초)
-constexpr int POST_EVENT_SEC = 3; // 이벤트 후 녹화 시간 (초)
+constexpr int PRE_EVENT_SEC = 2;  // 이벤트 전 녹화 시간 (초) → 2프레임
+constexpr int POST_EVENT_SEC = 3; // 이벤트 프레임 + 후 2초 (초) → 3프레임
 constexpr int EVENT_SAMPLING_FPS =
     1; // 초당 몇 장을 보낼 것인가 (1이면 1초에 1장)
 // 버퍼 용량 = PRE_EVENT_SEC × FPS_TARGET (예: 2×30 = 60 프레임)
+// 총 전송 프레임 = PRE(2) + POST(3) = 5프레임
 
 // --- [Phase 2] 스트림 전송기 설정 ---
 constexpr int TRANSMITTER_MAX_RETRIES = 3; // 최대 재시도 횟수

@@ -1,6 +1,7 @@
 #ifndef I_NETWORK_SENDER_H
 #define I_NETWORK_SENDER_H
 
+#include "../system/IResourceMonitor.h"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -21,6 +22,9 @@ public:
   // 서버로 이미지 및 메타데이터 송신
   virtual void sendImage(const std::string &metadata,
                          const std::vector<uint8_t> &jpeg_data) = 0;
+
+  // 서버로 기기 자원 상태(AVAILABLE) 송신
+  virtual void sendDeviceStatus(const DeviceStatus &status) = 0;
 };
 
 #endif // I_NETWORK_SENDER_H
