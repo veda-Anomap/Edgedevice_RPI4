@@ -6,12 +6,13 @@
 #include "../buffer/CircularFrameBuffer.h"
 #include "../buffer/EventRecorder.h"
 #include "../imageprocessing/ImagePreprocessor.h"
+#include "../imageprocessing/LowLightEnhancer.h"
 #include "../network/NetworkFacade.h"
 #include "../rendering/FrameRenderer.h"
 #include "../stream/GStreamerCamera.h"
 #include "../stream/StreamPipeline.h"
+#include "../system/SystemResourceMonitor.h"
 #include "../transmitter/ChunkedStreamTransmitter.h"
-#include "../util/FrameSaver.h"
 
 #include <thread>
 
@@ -34,7 +35,10 @@ SubCamController::SubCamController() : is_running_(false) {
       CV_32FC3                     // 출력 타입
   );
 
-  // 4. AI 감지기 (의존성 주입: IImagePreprocessor)
+  // 4.5. [최적화] 저조도 개선기 초기화
+  // low_light_enhancer_ = std::make_unique<LowLightEnhancer>();
+
+  // 5. AI 감지기 (의존성 주입: IImagePreprocessor)
   detector_ =
       std::make_unique<PoseEstimator>(AppConfig::MODEL_PATH, *preprocessor_);
 
@@ -57,7 +61,10 @@ SubCamController::SubCamController() : is_running_(false) {
   stream_transmitter_ = std::move(transmitter);
 
   // 8. [Phase 2] 이벤트 녹화기 (순환 버퍼 + 전송기 주입)
-  // feedFrame()은 1 FPS로 호출되므로 post_frames도 샘플링 기준으로 계산
+
+  // feedFrame()은 EVENT_SAMPLING_FPS(1 FPS)로 호출되므로 post_frames도 동일
+  // 기준
+  // int post_frames = AppConfig::POST_EVENT_SEC * AppConfig::FPS_TARGET;
   int post_frames = AppConfig::POST_EVENT_SEC * AppConfig::EVENT_SAMPLING_FPS;
   event_recorder_ = std::make_unique<EventRecorder>(
       *frame_buffer_, *stream_transmitter_, post_frames);
@@ -65,7 +72,10 @@ SubCamController::SubCamController() : is_running_(false) {
   // 9. StreamPipeline 생성 (모든 의존성 주입)
   stream_pipeline_ = std::make_unique<StreamPipeline>(
       *camera_, *detector_, *sender_ptr_, *renderer_, *saver_, *frame_buffer_,
-      *event_recorder_);
+      *event_recorder_, low_light_enhancer_.get());
+
+  // 10. 시스템 자원 모니터 생성
+  resource_monitor_ = std::make_unique<SystemResourceMonitor>();
 
   std::cout << "[Controller] 컴포넌트 초기화 완료 (Phase 2 포함)." << std::endl;
 }
@@ -77,9 +87,13 @@ void SubCamController::run(std::atomic<bool> *stop_flag) {
   std::cout << "[Controller] 시스템 시작됨. 서버 대기 중..." << std::endl;
 
   // 네트워크 시작 (명령 수신 콜백 등록)
-  command_receiver_->start([this](std::string ip, int port) {
+  command_receiver_->start([this](const std::string &ip, int port) {
     this->handleServerCommand(ip, port);
   });
+
+  // 시스템 모니터링 스레드 시작
+  monitor_thread_ =
+      std::thread(&SubCamController::monitorDeviceStatusLoop, this);
 
   // 메인 루프
   while (is_running_) {
@@ -117,4 +131,20 @@ void SubCamController::handleServerCommand(const std::string &server_ip,
   stream_transmitter_->setTarget(server_ip, udp_port + 1); // 별도 포트 사용
 
   stream_pipeline_->startStreaming(server_ip, udp_port);
+}
+
+void SubCamController::monitorDeviceStatusLoop() {
+  std::cout << "[SystemMonitor] 주기적 자원 모니터링 스레드 시작." << std::endl;
+
+  while (is_running_) {
+    if (resource_monitor_ && sender_ptr_) {
+      DeviceStatus status = resource_monitor_->getStatus();
+      sender_ptr_->sendDeviceStatus(status);
+    }
+
+    // 5초에 한 번씩 측정 및 전송
+    for (int i = 0; i < 50 && is_running_; ++i) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
 }

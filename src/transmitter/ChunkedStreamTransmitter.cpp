@@ -68,8 +68,6 @@ void ChunkedStreamTransmitter::transmit(const std::vector<FramePtr> &frames,
         ",\"timestamp_ms\":" + std::to_string(timestamp_ms) +
         ",\"jpeg_size\":" + std::to_string(jpeg_buffer.size()) + "}";
 
-    metadata_json += '\0'; // 수신측 구분용
-
     // 종료 신호 확인
     if (running_flag_ && !running_flag_->load()) {
       std::cout << "[ChunkedTransmitter] 시스템 종료 감지: 전송 중단"

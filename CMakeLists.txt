@@ -53,6 +53,8 @@ set(APP_SRC
 
     # [Phase 2] 이미지 전처리
     src/imageprocessing/ImagePreprocessor.cpp
+    src/imageprocessing/LowLightEnhancer.cpp
+    src/imageprocessing/AdvancedEnhancers.cpp
 
     # [Phase 2] 이벤트 버퍼
     src/buffer/CircularFrameBuffer.cpp
@@ -60,6 +62,9 @@ set(APP_SRC
 
     # [Phase 2] 스트림 전송
     src/transmitter/ChunkedStreamTransmitter.cpp
+
+    # 시스템 모니터링
+    src/system/SystemResourceMonitor.cpp
 )
 
 # -------------------------------
@@ -68,8 +73,11 @@ set(APP_SRC
 set(APP_NAME subcam_main)
 add_executable(${APP_NAME} ${APP_SRC})
 
-target_compile_options(${APP_NAME} PRIVATE -O2 -pg -g)
-target_link_options(${APP_NAME} PRIVATE -pg -g)
+#target_compile_options(${APP_NAME} PRIVATE -O2 -pg -g)
+#target_link_options(${APP_NAME} PRIVATE -pg -g)
+
+target_compile_options(${APP_NAME} PRIVATE -O3 -ffast-math -mcpu=native)
+target_link_options(${APP_NAME} PRIVATE -O3)
 
 # -------------------------------
 # 라이브러리 링크

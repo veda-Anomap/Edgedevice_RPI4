@@ -3,16 +3,19 @@
 
 #include <chrono>
 #include <iostream>
+#include <pthread.h>
 
 StreamPipeline::StreamPipeline(ICamera &camera, IAiDetector &detector,
                                INetworkSender &sender, FrameRenderer &renderer,
                                FrameSaver &saver,
                                CircularFrameBuffer &frame_buffer,
-                               EventRecorder &event_recorder)
+                               EventRecorder &event_recorder,
+                               IImageEnhancer *enhancer)
     : camera_(camera), detector_(detector), sender_(sender),
       renderer_(renderer), saver_(saver), frame_buffer_(frame_buffer),
-      event_recorder_(event_recorder), frame_queue_(1) {
-  std::cout << "[StreamPipeline] 의존성 주입 완료 (버퍼 + 이벤트 녹화 포함)."
+      event_recorder_(event_recorder), frame_queue_(1), enhancer_(enhancer) {
+  std::cout << "[StreamPipeline] 의존성 주입 완료 (버퍼 + 이벤트 녹화 + 저조도 "
+               "개선 플러그인 포함)."
             << std::endl;
 }
 
@@ -30,13 +33,15 @@ void StreamPipeline::startStreaming(const std::string &target_ip,
             << target_port << std::endl;
 
   // 카메라 파이프라인 구성
+  // OpenCV의 VideoCapture가 속성을 제대로 읽을 수 있도록 첫 번째 caps에 format
+  // 명시
   std::string capture_pipeline =
       "libcamerasrc ! "
       "video/x-raw, width=" +
       std::to_string(AppConfig::CAPTURE_WIDTH) +
       ", height=" + std::to_string(AppConfig::CAPTURE_HEIGHT) +
       ", framerate=" + std::to_string(AppConfig::FPS_TARGET) +
-      "/1 ! "
+      "/1, format=RGB ! "
       "v4l2convert ! "
       "videoscale ! "
       "video/x-raw, width=" +
@@ -92,6 +97,18 @@ void StreamPipeline::startStreaming(const std::string &target_ip,
   // 스레드 시작
   ai_thread_ = std::thread(&StreamPipeline::aiWorkerLoop, this);
   camera_thread_ = std::thread(&StreamPipeline::cameraLoop, this);
+
+  // [최적화] 카메라 캡처 스레드의 우선순위를 상향 조정 (Throttling 및
+  // RequestWrap 방지) GStreamer의 프레임 소진 부하를 AI 연산 부하로부터
+  // 보호합니다.
+  struct sched_param param;
+  param.sched_priority = 10; // 적절히 높은 우선순위 부여
+  if (pthread_setschedparam(camera_thread_.native_handle(), SCHED_RR, &param) !=
+      0) {
+    std::cerr << "[StreamPipeline] 경고: 카메라 스레드 우선순위 변경 실패 "
+                 "(root 권한이 필요할 수 있음)."
+              << std::endl;
+  }
 
   std::cout << "[StreamPipeline] 스트리밍 및 AI 스레드 시작됨." << std::endl;
 }
@@ -214,7 +231,9 @@ void StreamPipeline::aiWorkerLoop() {
 // ================================================================
 void StreamPipeline::cameraLoop() {
   cv::Mat frame;
-  cv::namedWindow("RPi_AI_Monitor", cv::WINDOW_AUTOSIZE);
+  if (AppConfig::ENABLE_DISPLAY) {
+    cv::namedWindow("RPi_AI_Monitor", cv::WINDOW_AUTOSIZE);
+  }
 
   while (is_streaming_) {
     if (!camera_.read(frame) || frame.empty()) {
@@ -227,6 +246,11 @@ void StreamPipeline::cameraLoop() {
     // read() 성공 후에도 종료 신호 확인 (release 전에 루프 탈출 보장)
     if (!is_streaming_)
       break;
+
+    // [최적화] 저조도 개선 플러그인 적용 (설정된 경우에만 실행)
+    if (enhancer_) {
+      enhancer_->enhance(frame, frame);
+    }
 
     // [최적화] 샘플링 레이트 계산
     static int global_frame_idx = 0;
@@ -248,8 +272,11 @@ void StreamPipeline::cameraLoop() {
     global_frame_idx++;
 
     // AI 스레드로 프레임 전달 (최적화: clone 제거, 얕은 복사로 전달)
-    // AI 스레드는 최신 프레임을 최대한 빨리 처리해야 하므로 샘플링 없이 전달
-    frame_queue_.push(frame);
+    // [최적화] 컨텍스트 스위칭 최소화를 위해 카메라 큐에서 직접 스킵 처리
+    static int ai_feed_counter = 0;
+    if (++ai_feed_counter % AppConfig::AI_INFERENCE_INTERVAL == 0) {
+      frame_queue_.push(frame);
+    }
 
     // 시각화용 복사본 생성 (원본 보호를 위해 1회만 clone)
     cv::Mat display_frame = frame.clone();
@@ -262,13 +289,20 @@ void StreamPipeline::cameraLoop() {
     network_writer_.write(display_frame);
 
     // 로컬 모니터 표시
-    cv::imshow("RPi_AI_Monitor", display_frame);
+    if (AppConfig::ENABLE_DISPLAY) {
+      cv::imshow("RPi_AI_Monitor", display_frame);
 
-    if (cv::waitKey(1) == 'q') {
-      is_streaming_ = false;
-      break;
+      if (cv::waitKey(1) == 'q') {
+        is_streaming_ = false;
+        break;
+      }
+    } else {
+      // 디스플레이가 없을 경우 시스템 부하 방지를 위해 짧은 sleep
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
   }
 
-  cv::destroyWindow("RPi_AI_Monitor");
+  if (AppConfig::ENABLE_DISPLAY) {
+    cv::destroyWindow("RPi_AI_Monitor");
+  }
 }

@@ -6,7 +6,6 @@
 #include "ICommandReceiver.h"
 #include "INetworkSender.h"
 
-
 #include <memory>
 
 // =============================================
@@ -28,6 +27,8 @@ public:
   void sendMessage(const std::string &msg) override;
   void sendImage(const std::string &metadata,
                  const std::vector<uint8_t> &jpeg_data) override;
+
+  void sendDeviceStatus(const DeviceStatus &status) override;
 
 private:
   std::unique_ptr<BeaconService> beacon_;
