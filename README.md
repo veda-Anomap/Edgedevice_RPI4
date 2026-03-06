@@ -60,6 +60,7 @@ stm_bridge/
 - STM32 요청/응답 처리는 메인 처리 루프가 담당합니다.
 - `DEVICE`, `AVAILABLE` 모두 수신 순서대로 큐에서 처리됩니다.
 - 큐가 가득 차면 가장 오래된 패킷부터 제거하고 로그를 남깁니다.
+- 서버 연결이 끊기면 해당 세션의 큐 잔여 패킷은 즉시 폐기합니다.
 
 이 구조로 UART ACK 대기 중에도 서버 수신 자체는 계속 진행되어, 소켓 수신 병목을 줄일 수 있습니다.
 
@@ -180,6 +181,13 @@ cmake --build build -j
 - `reconnect_initial_ms`
 - `reconnect_max_ms`
 - `log_file`
+
+값 제약:
+- `serial_baud > 0`
+- `uart_timeout_ms > 0`
+- `reconnect_initial_ms > 0`
+- `reconnect_max_ms > 0`
+- `reconnect_initial_ms <= reconnect_max_ms`
 
 항목 설명:
 - `serial_port`: STM32 연결 UART 장치(기본 `/dev/serial0`)

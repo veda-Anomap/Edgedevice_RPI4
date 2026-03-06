@@ -72,6 +72,27 @@ bool loadConfig(const std::string& path, BridgeConfig& cfg, std::string& err) {
     if (!setInt("reconnect_max_ms", cfg.reconnect_max_ms)) return false;
     if (!setString("log_file", cfg.log_file)) return false;
 
+    if (cfg.serial_baud <= 0) {
+        err = "serial_baud must be > 0";
+        return false;
+    }
+    if (cfg.uart_timeout_ms <= 0) {
+        err = "uart_timeout_ms must be > 0";
+        return false;
+    }
+    if (cfg.reconnect_initial_ms <= 0) {
+        err = "reconnect_initial_ms must be > 0";
+        return false;
+    }
+    if (cfg.reconnect_max_ms <= 0) {
+        err = "reconnect_max_ms must be > 0";
+        return false;
+    }
+    if (cfg.reconnect_initial_ms > cfg.reconnect_max_ms) {
+        err = "reconnect_initial_ms must be <= reconnect_max_ms";
+        return false;
+    }
+
     return true;
 }
 

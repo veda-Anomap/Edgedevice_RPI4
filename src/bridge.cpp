@@ -81,6 +81,13 @@ void Bridge::run() {
                 continue;
             }
 
+            // Do not execute queued commands from a broken session.
+            // They may be stale relative to the server state after reconnect.
+            if (disconnected.load()) {
+                clearPendingPackets();
+                break;
+            }
+
             if (!handleServerPacket(pkt.type, pkt.body)) {
                 logger_.log("ERROR", "failed to handle server packet");
             }
@@ -103,6 +110,7 @@ void Bridge::readerLoop(std::atomic<bool>& disconnected) {
             logger_.log("ERROR", "server read packet fail: " + err);
             disconnected.store(true);
             server_.close();
+            clearPendingPackets();
             queue_cv_.notify_all();
             return;
         }
