@@ -1,0 +1,3 @@
+/home/suseok/stm32_communicate/SubCameraApp_refactory_260306_queue_sensor communicate/build/CMakeFiles/subcam_main.dir
+/home/suseok/stm32_communicate/SubCameraApp_refactory_260306_queue_sensor communicate/build/CMakeFiles/edit_cache.dir
+/home/suseok/stm32_communicate/SubCameraApp_refactory_260306_queue_sensor communicate/build/CMakeFiles/rebuild_cache.dir
