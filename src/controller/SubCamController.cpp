@@ -7,12 +7,14 @@
 #include "../buffer/EventRecorder.h"
 #include "../imageprocessing/ImagePreprocessor.h"
 #include "../imageprocessing/LowLightEnhancer.h"
+#include "../imageprocessing/AdvancedEnhancers.h"
 #include "../network/NetworkFacade.h"
 #include "../rendering/FrameRenderer.h"
 #include "../stream/GStreamerCamera.h"
 #include "../stream/StreamPipeline.h"
 #include "../system/SystemResourceMonitor.h"
 #include "../transmitter/ChunkedStreamTransmitter.h"
+#include "../edge_device/EdgeBridgeModule.h"
 
 #include <thread>
 
@@ -36,7 +38,9 @@ SubCamController::SubCamController() : is_running_(false) {
   );
 
   // 4.5. [최적화] 저조도 개선기 초기화
-  // low_light_enhancer_ = std::make_unique<LowLightEnhancer>();
+  //low_light_enhancer_ = std::make_unique<LowLightEnhancer>();
+  //Retinex 적용 
+  low_light_enhancer_ = std::make_unique<RetinexEnhancer>();
 
   // 5. AI 감지기 (의존성 주입: IImagePreprocessor)
   detector_ =
@@ -77,7 +81,20 @@ SubCamController::SubCamController() : is_running_(false) {
   // 10. 시스템 자원 모니터 생성
   resource_monitor_ = std::make_unique<SystemResourceMonitor>();
 
-  std::cout << "[Controller] 컴포넌트 초기화 완료 (Phase 2 포함)." << std::endl;
+  // 11. [통합] Edge Device 브릿지 모듈 생성 및 시작
+  // 수정 전: 하드코딩된 경로가 우선순위를 가짐
+  // edge_bridge_ = std::make_unique<EdgeBridgeModule>("./config/edge_device_config.json");
+
+  // 수정 후: 인자를 비우면 .h의 기본값을 참조함
+  edge_bridge_ = std::make_unique<EdgeBridgeModule>();
+
+  if (!edge_bridge_->start()) {
+    std::cerr << "[Controller] EdgeBridge 시작 실패 (UART/설정 확인 필요). "
+              << "카메라 기능은 정상 동작합니다." << std::endl;
+    // 브릿지 실패해도 카메라 기능은 계속 동작
+  }
+
+  std::cout << "[Controller] 컴포넌트 초기화 완료 (Phase 2 + EdgeBridge 포함)." << std::endl;
 }
 
 SubCamController::~SubCamController() { stop(); }
@@ -112,6 +129,8 @@ void SubCamController::stop() {
     is_running_ = false;
     std::cout << "[Controller] 시스템 종료 중..." << std::endl;
 
+    if (edge_bridge_)
+      edge_bridge_->stop();
     if (stream_pipeline_)
       stream_pipeline_->stopStreaming();
     if (command_receiver_)
@@ -139,6 +158,10 @@ void SubCamController::monitorDeviceStatusLoop() {
   while (is_running_) {
     if (resource_monitor_ && sender_ptr_) {
       DeviceStatus status = resource_monitor_->getStatus();
+
+      // 추가: 큐 상태 정보 반영 (현재 대기 중인 녹화 개수)
+      status.pending_event_count = stream_pipeline_->getPendingEventCount();
+
       sender_ptr_->sendDeviceStatus(status);
     }
 

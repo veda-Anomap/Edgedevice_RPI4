@@ -21,6 +21,7 @@ class FrameSaver;
 class CircularFrameBuffer;
 class EventRecorder;
 class IResourceMonitor;
+class EdgeBridgeModule;
 
 // =============================================
 // SubCamController: 시스템 총괄 컨트롤러 (DIP)
@@ -63,6 +64,9 @@ private:
 
   std::unique_ptr<IResourceMonitor> resource_monitor_;
   std::thread monitor_thread_;
+
+  // [통합] Edge Device (STM32 UART 브릿지) 모듈
+  std::unique_ptr<EdgeBridgeModule> edge_bridge_;
 
   std::atomic<bool> is_running_;
 };

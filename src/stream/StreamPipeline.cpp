@@ -69,7 +69,7 @@ void StreamPipeline::startStreaming(const std::string &target_ip,
       "videoconvert ! video/x-raw, format=I420 ! "
       "x264enc tune=zerolatency bitrate=" +
       std::to_string(AppConfig::BITRATE) +
-      " speed-preset=ultrafast ! rtph264pay ! "
+      " speed-preset=ultrafast ! rtph264pay config-interval=1 !"
       "udpsink host=" +
       target_ip + " port=" + std::to_string(target_port) +
       " sync=false async=false";
@@ -222,7 +222,7 @@ void StreamPipeline::aiWorkerLoop() {
     auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                           end_time - start_time)
                           .count();
-    std::cout << "[AI Cycle] 실행 시간: " << elapsed_ms << " ms" << std::endl;
+    //std::cout << "[AI Cycle] 실행 시간: " << elapsed_ms << " ms" << std::endl;
   }
 }
 
@@ -275,7 +275,8 @@ void StreamPipeline::cameraLoop() {
     // [최적화] 컨텍스트 스위칭 최소화를 위해 카메라 큐에서 직접 스킵 처리
     static int ai_feed_counter = 0;
     if (++ai_feed_counter % AppConfig::AI_INFERENCE_INTERVAL == 0) {
-      frame_queue_.push(frame);
+      // AI 스레드로 프레임 전달 (전처리된 상태를 고정하기 위해 clone 필수)
+      frame_queue_.push(frame.clone());
     }
 
     // 시각화용 복사본 생성 (원본 보호를 위해 1회만 clone)
@@ -305,4 +306,8 @@ void StreamPipeline::cameraLoop() {
   if (AppConfig::ENABLE_DISPLAY) {
     cv::destroyWindow("RPi_AI_Monitor");
   }
+}
+
+int StreamPipeline::getPendingEventCount() const {
+  return event_recorder_.getPendingEventCount();
 }

@@ -21,6 +21,7 @@ include_directories(
     ${BAZEL_EXTERNAL}/com_google_absl
     ${CMAKE_SOURCE_DIR}/src
     ${CMAKE_SOURCE_DIR}/config
+    ${CMAKE_SOURCE_DIR}/third_party
 )
 
 # -------------------------------
@@ -65,6 +66,13 @@ set(APP_SRC
 
     # 시스템 모니터링
     src/system/SystemResourceMonitor.cpp
+
+    # [통합] Edge Device (STM32 UART 브릿지)
+    src/edge_device/EdgeBridgeModule.cpp
+    src/edge_device/bridge.cpp
+    src/edge_device/server_client.cpp
+    src/edge_device/uart_port.cpp
+    src/edge_device/stm32_proto.cpp
 )
 
 # -------------------------------
@@ -72,9 +80,6 @@ set(APP_SRC
 # -------------------------------
 set(APP_NAME subcam_main)
 add_executable(${APP_NAME} ${APP_SRC})
-
-#target_compile_options(${APP_NAME} PRIVATE -O2 -pg -g)
-#target_link_options(${APP_NAME} PRIVATE -pg -g)
 
 target_compile_options(${APP_NAME} PRIVATE -O3 -ffast-math -mcpu=native)
 target_link_options(${APP_NAME} PRIVATE -O3)

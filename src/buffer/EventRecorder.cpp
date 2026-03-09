@@ -19,12 +19,35 @@ EventRecorder::~EventRecorder() {
 }
 
 void EventRecorder::triggerEvent(int track_id) {
+  // 1. [최적화] 쿨다운 검사: 동일 트랙에 대해 너무 빈번한 트리거 방지
+  {
+    std::lock_guard<std::mutex> lock(cooldown_mutex_);
+    auto now = std::chrono::steady_clock::now();
+    if (track_last_event_time_.count(track_id)) {
+      auto elapsed = std::chrono::duration_cast<std::chrono::seconds>(
+                         now - track_last_event_time_[track_id])
+                         .count();
+      if (elapsed < AppConfig::EVENT_COOLDOWN_SEC) {
+        // 아직 쿨다운 중이면 무시
+        return;
+      }
+    }
+    track_last_event_time_[track_id] = now;
+  }
+
   // 트리거 시점의 pre-event snapshot을 즉시 확보 (시점 정확도 보장)
   std::vector<FramePtr> snapshot = buffer_.snapshot();
 
   if (is_recording_) {
-    // 녹화 중이면 큐에 적재 (이벤트 누락 방지)
+    // 2. [안정성] 대기 큐 인원 제한 (메모리 폭주 방지)
     std::lock_guard<std::mutex> lock(pending_mutex_);
+    if (pending_events_.size() >= AppConfig::EVENT_RECORDER_MAX_PENDING) {
+      std::cerr << "[EventRecorder] 경고: 대기 큐 가득 참. 이벤트 드랍 (ID: "
+                << track_id << ")" << std::endl;
+      return;
+    }
+
+    // 녹화 중이면 큐에 적재 (이벤트 누락 방지)
     pending_events_.push({track_id, std::move(snapshot)});
     std::cout << "[EventRecorder] 이벤트 큐에 적재 (ID: " << track_id
               << ", 대기 중: " << pending_events_.size() << "건)" << std::endl;
@@ -89,6 +112,11 @@ void EventRecorder::feedFrame(const cv::Mat &frame) {
 }
 
 bool EventRecorder::isRecording() const { return is_recording_; }
+
+int EventRecorder::getPendingEventCount() const {
+  std::lock_guard<std::mutex> lock(pending_mutex_);
+  return static_cast<int>(pending_events_.size());
+}
 
 void EventRecorder::recordingWorker(std::vector<FramePtr> pre,
                                     std::vector<FramePtr> post, int track_id) {

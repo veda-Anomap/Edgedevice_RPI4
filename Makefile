@@ -28,7 +28,7 @@ CXX = aarch64-linux-gnu-g++
 
 SYSROOT = $(HOME)/rpi_root
 CFLAGS += --sysroot=$(SYSROOT) \
-          -std=c++17 \
+          -std=c++17 -O3 -ffast-math \
           -I$(SYSROOT)/usr/include/gstreamer-1.0 \
           -I$(SYSROOT)/usr/include/glib-2.0 \
           -I$(SYSROOT)/usr/lib/aarch64-linux-gnu/glib-2.0/include \

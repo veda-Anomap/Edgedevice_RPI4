@@ -12,7 +12,6 @@
 #include "../util/FrameSaver.h"
 #include "ICamera.h"
 
-
 #include "../util/ThreadSafeQueue.h"
 #include <atomic>
 #include <condition_variable>
@@ -42,6 +41,7 @@ public:
   // 스트리밍 시작/중지
   void startStreaming(const std::string &target_ip, int target_port);
   void stopStreaming();
+  int getPendingEventCount() const;
 
 private:
   void cameraLoop();

@@ -79,6 +79,10 @@ constexpr int TRANSMITTER_MAX_RETRIES = 3; // 최대 재시도 횟수
 constexpr int JPEG_QUALITY = 85;           // JPEG 인코딩 품질 (0-100)
 constexpr int EVENT_CLIP_PORT_OFFSET = 1;  // 이벤트 클립 전송 포트 오프셋
 
+// --- [Stability] 자원 보호 설정 ---
+constexpr int EVENT_RECORDER_MAX_PENDING = 5; // 대기 큐 최대 건수 (메모리 보호)
+constexpr int EVENT_COOLDOWN_SEC = 10; // 동일 객체 낙상 재감지 쿨다운 (초)
+
 } // namespace AppConfig
 
 #endif // APP_CONFIG_H

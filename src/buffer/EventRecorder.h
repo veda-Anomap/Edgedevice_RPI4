@@ -5,7 +5,9 @@
 #include "CircularFrameBuffer.h"
 
 #include <atomic>
+#include <chrono>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <opencv2/opencv.hpp>
 #include <queue>
@@ -38,6 +40,7 @@ public:
   void feedFrame(const cv::Mat &frame);
 
   bool isRecording() const;
+  int getPendingEventCount() const; // 현재 대기 중인 이벤트 수 반환
 
 private:
   // 대기 중인 이벤트 정보
@@ -63,12 +66,16 @@ private:
 
   // post-event 프레임 수집
   std::vector<FramePtr> post_frames_;
-  std::mutex post_mutex_;
+  mutable std::mutex post_mutex_;
   std::atomic<int> post_count_{0};
+
+  // [최적화] 중복 트리거 방지를 위한 트랙별 마지막 이벤트 시간 기록 (쿨다운)
+  std::map<int, std::chrono::steady_clock::time_point> track_last_event_time_;
+  mutable std::mutex cooldown_mutex_;
 
   // 대기 이벤트 큐
   std::queue<PendingEvent> pending_events_;
-  std::mutex pending_mutex_;
+  mutable std::mutex pending_mutex_;
 
   // 전송 스레드
   std::thread transmit_thread_;
