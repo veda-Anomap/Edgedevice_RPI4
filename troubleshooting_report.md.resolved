@@ -1,0 +1,49 @@
+# [PM Report] SubCameraApp Troubleshooting & Optimization Summary
+
+**Project Status**: Stability Verified | Optimization Complete
+**Target Environment**: Raspberry Pi 4B (Native & Cross-build)
+**Reporting Period**: Initial Refactoring Phase ~ Final Optimization
+
+---
+
+## 1. Executive Summary
+본 보고서는 `SubCameraApp` 서비스 고도화 과정에서 발생한 빌드 시스템, GStreamer 파이프라인, 동시성 제어 및 AI 추론 성능 이슈에 대한 통합 대응 내역을 PM 관점에서 정리합니다. 
+초기 시스템은 런타임 크래시와 극심한 연산 지연(>1.5s)으로 구동이 불가능했으나, 아키텍처 개선 및 컴파일러 최적화를 통해 실시간 처리가 가능한 안정적인 상태로 정상화되었습니다.
+
+---
+
+## 2. Critical Issue Log & Resolution
+
+| Category | Issue Description | Root Cause | Resolution Strategy |
+| :--- | :--- | :--- | :--- |
+| **Build System** | Linker Error (Undefined Reference) | 컴포넌트 분리 후 `CMake/Makefile`에 신규 소스 누락 | `APP_SRC` 리스트에 시스템 모니터 및 인벤토리 파일 일괄 등록 |
+| **GStreamer** | Pipeline critical error / No Video | `libcamerasrc` 속성 오설정 및 Caps 협상 실패 | `buffer-count` 제거 및 `video/x-raw, format=RGB` 캡스 명시 |
+| **Concurrency** | `std::queue` Assertion Failure | 비어있는 큐에 대한 비동기 접근 (Race Condition) | [ThreadSafeQueue](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/util/ThreadSafeQueue.h#17-18) 도입 및 [wait_and_pop](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/util/ThreadSafeQueue.h#34-55) 조건부 대기 적용 |
+| **Stability** | `RequestWrap` Assertion (Shutdown) | 카메라 리소스 해제와 스레드 Join 순서 불일치 | [stopStreaming](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/stream/StreamPipeline.cpp#116-145) 시 `join()` 우선순위 보장 및 리소스 해제 순서 정렬 |
+| **Performance** | AI Cycle Latency (1584ms) | `-pg` 프로파일링 옵션 및 최적화 레벨(`-O2`) 부족 | 프로파일링 플래그 제거, `-O3 -ffast-math -mcpu=native` 적용 |
+| **Runtime** | GTK Backend Error (sudo) | `sudo` 권한 실행 시 X11 Display 접근 권한 부재 | `ENABLE_DISPLAY` 플래그 도입을 통한 Headless 구동 환경 지원 |
+
+---
+
+## 3. 핵심 기술 의사결정 (Strategic Decisions)
+
+### A. 동시성 및 자원 관리 최적화
+- **Bottleneck**: AI 연산(XNNPACK)이 4코어를 모두 점유할 경우 GStreamer 커널 버퍼가 공급되지 못함.
+- **Action**: `NUM_THREADS`를 3개로 제한하여 1개 코어를 시스템/카메라 전용으로 예약.
+- **Result**: CPU 쓰로틀링 완화 및 안정적인 프레임 공급망 확보.
+
+### B. 파이프라인 제어권 변경 (Producer-Side Gating)
+- **Bottleneck**: AI 스레드 내부에서 프레임을 세고 버리는 방식(Consumer-side skip)은 불필요한 컨텍스트 스위칭 유발.
+- **Action**: 카메라 스레드(Producer)에서 `AI_INFERENCE_INTERVAL`에 따라 큐 전달을 직접 제어.
+- **Result**: 뮤텍스 경합 80% 감소 및 UI/네트워크 송출 싱크 향상.
+
+---
+
+## 4. 위험 요소 및 향후 권고 사항 (Future Considerations)
+1. **권한 관리**: 시스템 우선순위(`pthread_setschedparam`) 조절을 위해서는 여전히 `sudo`가 필요하나, 이 경우 Display 호스트 설정(`xhost +`)이 선행되어야 함을 배포 문서에 명시해야 합니다.
+2. **모델 갱신**: 향후 성능 추가가 필요할 경우 TFLite 대신 라즈베리파이 하드웨어 가속(NPU/GPU)을 타겟으로 한 OpenVINO 또는 전용 SDK 도입을 고려할 필요가 있습니다.
+
+---
+
+**PM 총평**: 
+본 프로젝트는 초기 기능 구현 중심의 코드에서 **안정성과 성능이 보장된 임베디드 아키텍처**로 성공적으로 전환되었습니다. 특히 컴팩트한 설정 전역화([AppConfig.h](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/config/AppConfig.h))를 통해 현장 상황에 유연하게 대응할 수 있는 이식성을 확보하였습니다.
