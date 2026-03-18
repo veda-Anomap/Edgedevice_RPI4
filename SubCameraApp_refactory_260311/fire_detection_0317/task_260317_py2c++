@@ -1,0 +1,30 @@
+# C++17 Fire Detection Pipeline Migration Task
+
+## 1. Planning & Architecture
+- [x] Analyze Python reference code ([video_confusion_rtsp.py](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260309/fire_detection/video_confusion_rtsp.py), [pi_fire_fusion_pipeline_tensor.py](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260309/fire_detection/pi_fire_fusion_pipeline_tensor.py))
+- [x] Design C++ Producer-Consumer threading model (Threads A, B, C)
+- [x] Create Implementation Plan
+
+## 2. CMake Build System
+- [ ] Create `CMakeLists.txt`
+- [ ] Configure OpenCV dependencies with GStreamer and optional TFLite support
+- [ ] Enable C++17 and optimization flags (e.g., `-O3`, `-mcpu=cortex-a72`)
+
+## 3. C++ Implementation (`main.cpp`)
+- [ ] **Thread A: Ingestion (Producer)**
+  - Implement GStreamer fallback backend in `cv::VideoCapture` (`rtspsrc latency=0`)
+  - Continuous loop fetching latest matrices without queuing lag.
+- [ ] **Thread B: Processing (Consumer)**
+  - Preallocate `cv::Mat` to prevent dynamic memory allocation overhead
+  - Implement `compute_initial_affine` using `float` type matrix math
+  - Re-implement [PrecisionAligner](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/fire_detection_0317/video_confusion_rtsp.py#107-141) executing ECC on downsampled edge gradients
+  - Convert [FireDetector](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/fire_detection_0317/video_confusion_rtsp.py#16-64) to use C++ OpenCV logic (`cv::threshold`, `cv::inRange`, `cv::bitwise_and`) with a lightweight temporal history checking mechanism (e.g., `std::deque`)
+- [ ] **Thread C: UI Rendering**
+  - Read synced output from Thread B, render fused overlay, layout HUD, and execute `cv::imshow`.
+
+## 4. Resource & Robustness Checks
+- [ ] Utilize `std::mutex`, `std::condition_variable`, and `std::atomic` for concurrency.
+- [ ] Ensure safe thread teardown to prevent `Aborted` exits previously observed in Python.
+
+## 5. Verification 
+- [ ] Request User Review of code.

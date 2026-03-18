@@ -1,0 +1,39 @@
+# Plan: C++17 RPi 4B Fire Detection Pipeline Migration
+
+## Goal
+To rewrite the Python-based RGB-Thermal fire detection script into extremely optimized C++17, specifically targeting the compute ceiling of the Raspberry Pi 4B over ARM NEON, achieving zero-lag video fusion via GStreamer OpenCV pipelines.
+
+## Planned Changes
+
+### 1. Build System Setup (`CMakeLists.txt`)
+Create a robust CMake configuration that specifies C++17 and links against OpenCV. The configuration will include instructions on optimizing for the RPi's Broadcom CPU (`-mcpu=cortex-a72`, `-mfpu=neon-fp-armv8`).
+
+### 2. Multi-Threading Architecture (`main.cpp`)
+Replace Python's `threading` with standard library constructs (`std::thread`, `std::mutex`, `std::atomic`, `std::condition_variable`) to implement a highly deterministic Producer-Consumer pattern.
+
+1. **Thread A (Frame Grabber - Producer):**
+   - Implement the zero-latency ingestion using GStreamer backend:
+     `rtspsrc location=<URL> latency=0 ! rtph264depay ! h264parse ! v4l2slh264dec ! videoconvert ! appsink`
+   - Store the most recent frame in a tightly-locked global variable, preventing memory leaks (`cv::Mat` queuing).
+
+2. **Thread B (Vision Processing - Consumer):**
+   - Execute exactly when new data is available without hogging the CPU.
+   - Recreate `compute_initial_affine`.
+   - **Optimized ECC Aligner:** Run `cv::findTransformECC` on heavily downsampled gradient magnitude frames (`cv::resize`, `cv::Scharr`), scaling the resulting rigid affine transformation up to save floating-point calculations.
+   - **Lightweight Fire Logic:** Bypass YOLO natively unless built against TensorRT. Instead, strictly rely on `cv::threshold` (Thermal) intersected with `cv::inRange` (RGB HSV), filtered through a fixed-size `std::deque<bool>` temporal consistency buffer.
+   
+3. **Thread C (Renderer):**
+   - Separately lock output buffers to apply `cv::COLORMAP_INFERNO`, blend overlays via `cv::addWeighted`, attach text overlays, and pump `cv::imshow` to prevent slowing down Thread B.
+
+### 3. Memory & Mathematical Optimizations
+- Use `CV_32F` (float) everywhere strictly instead of implicit `CV_64F` (double), which is notoriously slow on RPi.
+- Pre-allocate all `cv::Mat` data grids used in tight loops (e.g. masks, intermediate blurred images) instead of recreating them dynamically.
+
+## Verification Plan
+
+### Manual Verification
+1. **User Build Test**: Provide the user the resulting C++ script and CMake file to compile natively on their RPi.
+2. **Review Metrics**: The user should verify:
+   - Compile passes without NEON/OpenCV undefined references.
+   - Visual output verifies ECC registration functions flawlessly in real-time.
+   - `std::thread::join` intercepts SIGINT/Key strikes properly, exiting without core dump aborts.

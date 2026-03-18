@@ -1,0 +1,356 @@
+#include "StreamPipeline.h"
+#include "../../config/AppConfig.h"
+
+#include <chrono>
+#include <iostream>
+#include <pthread.h>
+
+StreamPipeline::StreamPipeline(ICamera &camera, IAiDetector &detector,
+                               INetworkSender &sender, FrameRenderer &renderer,
+                               FrameSaver &saver,
+                               CircularFrameBuffer &frame_buffer,
+                               EventRecorder &event_recorder,
+                               IImageEnhancer *enhancer)
+    : camera_(camera), detector_(detector), sender_(sender),
+      renderer_(renderer), saver_(saver), frame_buffer_(frame_buffer),
+      event_recorder_(event_recorder), frame_queue_(1), enhancer_(enhancer) {
+  std::cout << "[StreamPipeline] 의존성 주입 완료 (버퍼 + 이벤트 녹화 + 저조도 "
+               "개선 플러그인 포함)."
+            << std::endl;
+}
+
+StreamPipeline::~StreamPipeline() { stopStreaming(); }
+
+void StreamPipeline::startStreaming(const std::string &target_ip,
+                                    int target_port) {
+  if (is_streaming_) {
+    std::cout << "[StreamPipeline] 이미 스트리밍 중. 재시작합니다..."
+              << std::endl;
+    stopStreaming();
+  }
+
+  std::cout << "[StreamPipeline] AI 스트림 시작: " << target_ip << ":"
+            << target_port << std::endl;
+
+  // 카메라 파이프라인 구성 (하드웨어 가속 최적화)
+  // - v4l2convert: RPi4 ISP/VPU 하드웨어 스케일러 활용
+  // - videoflip: 하드웨어 가속 회전 (필요 시)
+  std::string capture_pipeline =
+      "libcamerasrc ! "
+      "video/x-raw, width=" +
+      std::to_string(AppConfig::CAPTURE_WIDTH) +
+      ", height=" + std::to_string(AppConfig::CAPTURE_HEIGHT) +
+      ", framerate=" + std::to_string(AppConfig::FPS_TARGET) +
+      "/1, format=RGB ! "
+      "v4l2convert ! "
+      "videoflip method=rotate-180 ! " // flip
+      "videoscale ! "
+      "video/x-raw, width=" +
+      std::to_string(AppConfig::FRAME_WIDTH) +
+      ", height=" + std::to_string(AppConfig::FRAME_HEIGHT) +
+      ", format=BGR ! " // appsink 전 단계에서 BGR 변환 및 크기 고정
+      "queue max-size-buffers=2 leaky=downstream ! "
+      "appsink drop=true max-buffers=1 sync=false";
+
+  if (!camera_.open(capture_pipeline)) {
+    std::cerr << "[StreamPipeline] 카메라 파이프라인 열기 실패!" << std::endl;
+    return;
+  }
+
+  // 네트워크 송출 파이프라인
+  std::string send_pipeline =
+      "appsrc ! video/x-raw, format=BGR, width=" +
+      std::to_string(AppConfig::FRAME_WIDTH) +
+      ", height=" + std::to_string(AppConfig::FRAME_HEIGHT) +
+      ", framerate=" + std::to_string(AppConfig::FPS_TARGET) +
+      "/1 ! "
+      "queue max-size-buffers=30 ! "
+      "videoconvert ! video/x-raw, format=I420 ! "
+      "x264enc tune=zerolatency bitrate=" +
+      std::to_string(AppConfig::BITRATE) +
+      " speed-preset=ultrafast ! rtph264pay config-interval=1 !"
+      "udpsink host=" +
+      target_ip + " port=" + std::to_string(target_port) +
+      " sync=false async=false";
+
+  network_writer_.open(
+      send_pipeline, cv::CAP_GSTREAMER, 0, AppConfig::FPS_TARGET,
+      cv::Size(AppConfig::FRAME_WIDTH, AppConfig::FRAME_HEIGHT));
+
+  if (!network_writer_.isOpened()) {
+    std::cerr << "[StreamPipeline] 네트워크 쓰기 열기 실패!" << std::endl;
+    camera_.release();
+    return;
+  }
+
+  // AI 모델 초기화
+  if (!detector_.initialize()) {
+    std::cerr << "[StreamPipeline] AI 모델 초기화 실패!" << std::endl;
+    camera_.release();
+    network_writer_.release();
+    return;
+  }
+
+  is_streaming_ = true;
+
+  // 스레드 시작
+  ai_thread_ = std::thread(&StreamPipeline::aiWorkerLoop, this);
+  camera_thread_ = std::thread(&StreamPipeline::cameraLoop, this);
+
+  // [최적화] 카메라 캡처 스레드의 우선순위를 상향 조정 (Throttling 및
+  // RequestWrap 방지) GStreamer의 프레임 소진 부하를 AI 연산 부하로부터
+  // 보호합니다.
+  struct sched_param param;
+  param.sched_priority = 10; // 적절히 높은 우선순위 부여
+  if (pthread_setschedparam(camera_thread_.native_handle(), SCHED_RR, &param) !=
+      0) {
+    std::cerr << "[StreamPipeline] 경고: 카메라 스레드 우선순위 변경 실패 "
+                 "(root 권한이 필요할 수 있음)."
+              << std::endl;
+  }
+
+  std::cout << "[StreamPipeline] 스트리밍 및 AI 스레드 시작됨." << std::endl;
+}
+
+void StreamPipeline::stopStreaming() {
+  std::lock_guard<std::mutex> stop_lock(stop_mutex_);
+
+  // 1. 상태 플래그 변경 및 AI 스레드 깨움
+  is_streaming_ = false;
+  std::cout << "[StreamPipeline] 스트리밍 중지 시도 (리소스 선해제 방식)..."
+            << std::endl;
+  frame_queue_.notify_all();
+
+  // 2. I/O 리소스 선해제 (중요: RequestWrap 방지를 위해 join 전에 release)
+  // read() 대기 중인 카메라 스레드를 물리적으로 unblock 시킵니다.
+  camera_.release();
+  if (network_writer_.isOpened())
+    network_writer_.release();
+
+  // 3. 각 스레드 종료 대기
+  if (camera_thread_.joinable()) {
+    std::cout << "[StreamPipeline] 카메라 스레드 종료 완료 대기..."
+              << std::endl;
+    camera_thread_.join();
+  }
+  if (ai_thread_.joinable()) {
+    std::cout << "[StreamPipeline] AI 스레드 종료 완료 대기..." << std::endl;
+    ai_thread_.join();
+  }
+
+  // 4. 나머지 큐 정리
+  frame_queue_.clear();
+
+  std::cout << "[StreamPipeline] 모든 스트리밍 리소스 정리 완료." << std::endl;
+}
+
+void StreamPipeline::setControllerRunningFlag(std::atomic<bool> *flag) {
+  controller_running_flag_ = flag;
+}
+
+// ================================================================
+// AI 작업 스레드: 감지 → 트래킹 → 낙상 판정 → 버퍼 이벤트 트리거
+// ================================================================
+void StreamPipeline::aiWorkerLoop() {
+  int last_person_count = -1;
+
+  while (is_streaming_) {
+    cv::Mat target_frame;
+
+    // ThreadSafeQueue를 사용하여 안전하게 프레임 수령 (중단 조건 포함)
+    if (!frame_queue_.wait_and_pop(target_frame,
+                                   [this] { return !is_streaming_; })) {
+      std::cout << "[AI] 대기 중 스트리밍 중지 감지" << std::endl;
+      break;
+    }
+
+    if (target_frame.empty()) {
+      std::cout << "[AI] 경고: 빈 프레임 수령" << std::endl;
+      continue;
+    }
+
+    // 1. AI 감지 (PoseEstimator에 위임)
+    auto start_time = std::chrono::steady_clock::now();
+    auto raw_detections = detector_.detect(target_frame);
+
+    DetectionResult local_result;
+
+    for (auto &det : raw_detections) {
+      // 2. 트래킹 ID 할당 (PersonTracker에 위임)
+      cv::Point center(det.box.x + det.box.width / 2,
+                       det.box.y + det.box.height / 2);
+      det.track_id = tracker_.assignId(center);
+
+      // 3. 낙상 판정 (FallDetector에 위임)
+      det.is_falling =
+          fall_detector_.checkFall(det.box, det.skeleton, det.track_id);
+
+      // 4. 낙상 시: 이미지 저장 + JSON 전송 + 이벤트 녹화 트리거
+      if (det.is_falling && !fall_detector_.isAlreadySaved(det.track_id)) {
+        // 낙상 이미지 저장
+        cv::Mat save_img = target_frame.clone();
+        renderer_.drawSingleDetection(save_img, det);
+        saver_.saveFallFrame(save_img, det.track_id);
+        fall_detector_.markSaved(det.track_id);
+
+        // JSON 알림 서버 전송
+        std::string json_msg = "{\"status\": \"falling detected\", \"id\": " +
+                               std::to_string(det.track_id) + "}";
+        sender_.sendMessage(json_msg);
+
+        // [Phase 2] 이벤트 녹화 트리거 (pre+post 클립 수집 시작)
+        event_recorder_.triggerEvent(det.track_id);
+      } else if (!det.is_falling) {
+        fall_detector_.clearSavedFlag(det.track_id);
+      }
+
+      local_result.objects.push_back(det);
+    }
+
+    local_result.person_count = (int)local_result.objects.size();
+
+    {
+      std::lock_guard<std::mutex> lock(result_mutex_);
+      shared_result_ = local_result;
+    }
+
+    // 인원 수 변경 시 서버에 알림
+    if (local_result.person_count != last_person_count) {
+      std::string json_msg =
+          "{\"person_count\":" + std::to_string(local_result.person_count) +
+          "}";
+      sender_.sendMessage(json_msg);
+      last_person_count = local_result.person_count;
+    }
+
+    auto end_time = std::chrono::steady_clock::now();
+    auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          end_time - start_time)
+                          .count();
+
+    // [성능 모니터링] AI 지연시간 통계
+    static double avg_ai_ms = 0;
+    avg_ai_ms = (avg_ai_ms == 0) ? (double)elapsed_ms
+                                 : (avg_ai_ms * 0.9 + (double)elapsed_ms * 0.1);
+
+    static auto last_log_time = std::chrono::steady_clock::now();
+    auto now = std::chrono::steady_clock::now();
+    if (std::chrono::duration_cast<std::chrono::milliseconds>(now - last_log_time)
+            .count() >= 5000) {
+      std::cout << "[Performance] Avg AI Latency: " << (int)avg_ai_ms
+                << " ms (Recent: " << elapsed_ms << " ms)" << std::endl;
+      last_log_time = now;
+    }
+  }
+}
+
+// ================================================================
+// 카메라 루프: 캡처 → 버퍼 push → AI 공유 → 시각화 → 네트워크 송출
+// ================================================================
+void StreamPipeline::cameraLoop() {
+  cv::Mat frame;
+  if (AppConfig::ENABLE_DISPLAY) {
+    cv::namedWindow("RPi_AI_Monitor", cv::WINDOW_AUTOSIZE);
+  }
+
+  while (is_streaming_) {
+    // [중요] camera_.read() 호출 직전에 한 번 더 체크 (camera_.release() 호출
+    // 후의 연산을 방지)
+    if (!is_streaming_)
+      break;
+
+    auto read_start = std::chrono::steady_clock::now();
+    bool read_success = camera_.read(frame);
+    auto read_end = std::chrono::steady_clock::now();
+    auto read_duration = std::chrono::duration_cast<std::chrono::milliseconds>(
+                             read_end - read_start)
+                             .count();
+
+    if (!read_success || frame.empty()) {
+      if (!is_streaming_)
+        break;
+      std::cout << "[StreamPipeline] 카메라 읽기 실패 (재시도 중...)"
+                << std::endl;
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      continue;
+    }
+
+    // GStreamer 읽기 지연이 비정상적으로 길 경우 경고 (버퍼 부족 전조 현상)
+    if (read_duration > 150) {
+      std::cout << "[Performance Warning] GStreamer Read Blocked for "
+                << read_duration << " ms!" << std::endl;
+    }
+
+    // read() 성공 후에도 종료 신호 확인 (release 전에 루프 탈출 보장)
+    if (!is_streaming_)
+      break;
+
+    // [최적화] 저조도 개선 플러그인 적용 (설정된 경우에만 실행)
+    if (enhancer_) {
+      enhancer_->enhance(frame, frame);
+    }
+
+    // [최적화] 샘플링 레이트 계산
+    static int global_frame_idx = 0;
+    int sampling_step = AppConfig::FPS_TARGET / AppConfig::EVENT_SAMPLING_FPS;
+    if (sampling_step < 1)
+      sampling_step = 1;
+
+    // [Phase 2] 샘플링된 프레임만 버퍼 및 레코더에 전달 (메모리 사용량 및 복사
+    // 부하 감소)
+    if (global_frame_idx % sampling_step == 0) {
+      // 순환 버퍼 (pre-event)
+      frame_buffer_.push(frame);
+
+      // 이벤트 레코더 (post-event)
+      // feedFrame 내부에서는 이미 count를 기반으로 중복 샘플링 방지 로직이
+      // 있으나 여기서 한 번 더 걸러주면 feedFrame 호출 부하도 줄어듦
+      event_recorder_.feedFrame(frame);
+    }
+    global_frame_idx++;
+
+    // AI 스레드로 프레임 전달 (Zero-copy: clone 제거, 얕은 복사로 전달)
+    // OpenCV의 내부 참조 카운팅을 활용하여 AI 스레드가 처리 중일 때만 새 버퍼
+    // 할당 유도
+    static int ai_feed_counter = 0;
+    if (++ai_feed_counter % AppConfig::AI_INFERENCE_INTERVAL == 0) {
+      frame_queue_.push(frame); // 얕은 복사 (refcount 증가)
+    }
+
+    // 시각화용 복사본 생성 (원본 보호를 위해 1회만 clone)
+    cv::Mat display_frame = frame.clone();
+    {
+      std::lock_guard<std::mutex> lock(result_mutex_);
+      renderer_.drawDetections(display_frame, shared_result_);
+    }
+
+    // 서버로 네트워크 송출
+    network_writer_.write(display_frame);
+
+    // 로컬 모니터 표시
+    if (AppConfig::ENABLE_DISPLAY) {
+      cv::imshow("RPi_AI_Monitor", display_frame);
+
+      if (cv::waitKey(1) == 'q') {
+        std::cout << "[StreamPipeline] 'q' 키 입력 감지. 종료를 시도합니다..."
+                  << std::endl;
+        is_streaming_ = false;
+        if (controller_running_flag_) {
+          *controller_running_flag_ = false;
+        }
+        break;
+      }
+    } else {
+      // 디스플레이가 없을 경우 시스템 부하 방지를 위해 짧은 sleep
+      std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+  }
+
+  if (AppConfig::ENABLE_DISPLAY) {
+    cv::destroyWindow("RPi_AI_Monitor");
+  }
+}
+
+int StreamPipeline::getPendingEventCount() const {
+  return event_recorder_.getPendingEventCount();
+}
