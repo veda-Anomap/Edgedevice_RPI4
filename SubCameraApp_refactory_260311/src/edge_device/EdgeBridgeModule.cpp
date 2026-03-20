@@ -1,11 +1,14 @@
 #include "EdgeBridgeModule.h"
 #include "bridge.h"
+#include "../util/Logger.h"
 
 #include <nlohmann/json.hpp>
 
 #include <fstream>
 #include <iostream>
 #include <string>
+
+static const std::string TAG = "EdgeBridge";
 
 namespace {
 
@@ -60,7 +63,7 @@ bool EdgeBridgeModule::start() {
     edge_device::BridgeConfig cfg;
     std::string err;
     if (!loadConfig(config_path_, cfg, err)) {
-        std::cerr << "[EdgeBridge] config load failed: " << config_path_ << std::endl;
+        LOG_ERROR(TAG, "config load failed: " + config_path_);
         return false;
     }
 

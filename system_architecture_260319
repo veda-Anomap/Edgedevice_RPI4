@@ -1,0 +1,156 @@
+# System Architecture & Optimization Report
+
+This document details the software architecture, design principles, and performance optimizations implemented in the `SubCameraApp_refactory` project.
+
+---
+
+## 1. System Overview & Folder Structure
+
+The project follows a **Layered Architecture** with **Dependency Injection (DI)** to ensure high decoupling and testability.
+
+| Folder | Role | Key Components |
+| :--- | :--- | :--- |
+| [ai](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/main.cpp#14-30) | **Intelligence Layer** | [PoseEstimator](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/ai/PoseEstimator.h#19-22), `FallDetector`, `PersonTracker` |
+| `buffer` | **Data Storage Layer** | [CircularFrameBuffer](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/buffer/CircularFrameBuffer.cpp#4-9), [EventRecorder](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/buffer/EventRecorder.cpp#11-18) |
+| `controller` | **Orchestration Layer** | [SubCamController](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/controller/SubCamController.cpp#26-102) (Entry point & DI setup) |
+| `edge_device` | **Hardware Interface** | [EdgeBridgeModule](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/edge_device/EdgeBridgeModule.cpp#53-55), `Stm32Proto` (UART/Motor control) |
+| `imageprocessing`| **Vision Utility Layer** | [ImagePreprocessor](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/imageprocessing/ImagePreprocessor.cpp#4-15), `LowLightEnhancer` |
+| `network` | **Communication Layer** | `NetworkFacade`, `INetworkSender` |
+| `rendering` | **Visualization Layer** | `FrameRenderer` (Overlay drawing) |
+| `stream` | **Capture & Pipeline** | [StreamPipeline](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/stream/StreamPipeline.cpp#16-29), [GStreamerCamera](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/stream/GStreamerCamera.h#14-15) |
+| `util` | **Common Utilities** | [Logger](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/util/Logger.h#19-50), [ThreadSafeQueue](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/util/ThreadSafeQueue.h#15-107), `FrameSaver` |
+
+---
+
+## 2. UML Class Diagram
+
+```mermaid
+classDiagram
+    class SubCamController {
+        -is_running_: atomic~bool~
+        -stream_pipeline_: unique_ptr~StreamPipeline~
+        -edge_bridge_: unique_ptr~EdgeBridgeModule~
+        +run()
+        +stop()
+    }
+
+    class StreamPipeline {
+        -is_streaming_: atomic~bool~
+        -camera_thread_: thread
+        -processing_thread_: thread
+        -ai_thread_: thread
+        -processing_queue_: ThreadSafeQueue~Mat~
+        +startStreaming()
+        +stopStreaming()
+    }
+
+    class ICamera {
+        <<interface>>
+        +open() bool*
+        +read(Mat& frame) bool*
+        +release() void*
+    }
+
+    class IAiDetector {
+        <<interface>>
+        +detect(Mat& frame) vector~Detection~*
+    }
+
+    class INetworkSender {
+        <<interface>>
+        +sendMessage(string)*
+        +sendImage(string, vector~uint8~) scale*
+    }
+
+    class EventRecorder {
+        -state_mutex_: mutex
+        -transmit_thread_: thread
+        +triggerEvent(int track_id)
+        +feedFrame(Mat& frame)
+    }
+
+    SubCamController --> StreamPipeline : Orchestrates
+    SubCamController --> EdgeBridgeModule : Controls Hardware
+    StreamPipeline o-- ICamera : Uses
+    StreamPipeline o-- IAiDetector : Uses
+    StreamPipeline o-- INetworkSender : Uses (NetworkFacade)
+    StreamPipeline o-- EventRecorder : Triggers recording
+    EventRecorder o-- CircularFrameBuffer : Pulls pre-event
+    GStreamerCamera ..|> ICamera : Implements
+    PoseEstimator ..|> IAiDetector : Implements
+    NetworkFacade ..|> INetworkSender : Implements
+```
+
+---
+
+## 3. Sequence Diagram (Normal Operation Loop)
+
+This diagram shows the **Non-Blocking Capture** flow designed to prevent GStreamer crashes.
+
+```mermaid
+sequenceDiagram
+    participant Cam as GStreamerCamera
+    participant Cap as Capture Thread
+    participant PQueue as Processing Queue
+    participant Proc as Processing Thread
+    participant AI as AI Thread
+
+    loop Capture Loop
+        Cap->>Cam: read(raw_frame)
+        Cam-->>Cap: Frame Buffer
+        Cap->>Cap: clone() & release(raw_frame)
+        Cap->>PQueue: push(work_frame)
+    end
+
+    loop Processing Loop
+        PQueue->>Proc: wait_and_pop()
+        Proc->>Proc: Enhance & Save to Buffer
+        Note over Proc, AI: 1 FPS Interval Check
+        Proc->>AI: push(clone)
+        Proc->>Proc: Network Write & Display
+    end
+
+    loop AI Loop
+        AI->>AI: detect()
+        AI->>Proc: Update shared_result
+    end
+```
+
+---
+
+## 4. Implemented Optimizations
+
+### High-Stability Optimizations
+1.  **Thread Decoupling (Non-Blocking Capture)**: Split capture from processing. Capture thread is now "Ultra-Light", preventing `libcamerasrc` from ever timing out due to slow downstream tasks.
+2.  **Immediate Buffer Return**: `clone()` and [release()](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/stream/GStreamerCamera.cpp#22-27) are performed immediately after capture. This ensures the GStreamer buffer pool (limited on RPi) never starves.
+3.  **Shutdown Synchronization**: Added `camera_mutex_` and re-ordered the stop sequence to ensure [release()](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/stream/GStreamerCamera.cpp#22-27) doesn't race with active [read()](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/stream/GStreamerCamera.cpp#18-21) calls.
+
+### CPU & Resource Optimizations
+1.  **AI Downsampling (~1 FPS)**: Modified to perform AI inference only once every 30 frames (adjustable). This preserves CPU cycles for GStreamer encoding and OS tasks.
+2.  **Hardware ISP Scaling**: Added `v4l2convert` to the pipeline (ISP-level scaling) to offload the `1080p -> 480p` conversion from the CPU.
+3.  **Async Video Transmission**: Event recordings are transmitted in separate detached threads using a [ThreadSafeQueue](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/util/ThreadSafeQueue.h#15-107) to prevent UI/Capture jitter.
+4.  **UART Deduplication**: "Read-twice, Resend-once" strategy in the EdgeBridge prevents unintended double-movements when ACK is late.
+
+---
+
+## 5. SOLID Principles Evaluation
+
+| Principle | Assessment | Observation |
+| :--- | :--- | :--- |
+| **S**ingle Responsibility | **Excellent** | [StreamPipeline](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/stream/StreamPipeline.cpp#16-29) only orchestrates threads; capture, AI, and storage are in separate classes. |
+| **O**pen/Closed | **Good** | New AI models or Cameras can be added via [IAiDetector](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/ai/IAiDetector.h#28-38) / [ICamera](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/stream/ICamera.h#12-28) without changing the orchestrator. |
+| **L**iskov Substitution | **Excellent** | Derived enhancers and cameras follow the interface contract strictly. |
+| **I**nterface Segregation| **Fair** | `NetworkFacade` handles both commands and data. It could be split into `ICommandReceiver` and `IDataSender` if complexity grows. |
+| **D**ependency Inversion | **Excellent** | High-level modules depend on abstractions (Interfaces), not concrete implementations. |
+
+---
+
+## 6. Recommendations for Further Optimization
+
+1.  **Zero-Copy AI Interface**: Currently, OpenCV `Mat` is converted to TFLite tensors in [ImagePreprocessor](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/imageprocessing/ImagePreprocessor.cpp#4-15). Explore using DMABUF directly in TFLite if the model supports it.
+2.  **SIMD Acceleration**: The `AdvancedEnhancers` (e.g., LowLight) use pixel-level loops. These can be accelerated using **ARM NEON Intrinsics**.
+3.  **Static Result Memory**: Pre-allocate [DetectionResult](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/ai/IAiDetector.h#18-22) buffers to avoid `std::vector` heap allocations in the high-frequency loop.
+4.  **Network-Adaptive Bitrate**: Add a telemetry feedback loop to adjust the GStreamer `video_bitrate` dynamically when network packet loss is detected by `udpsink`.
+
+---
+*Generated by Antigravity AI - System Architect*

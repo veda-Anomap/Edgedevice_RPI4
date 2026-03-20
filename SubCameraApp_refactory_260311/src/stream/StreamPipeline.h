@@ -11,6 +11,10 @@
 #include "../rendering/FrameRenderer.h"
 #include "../util/FrameSaver.h"
 #include "ICamera.h"
+#include <opencv2/opencv.hpp>
+#include "../util/PerformanceMonitor.h"
+#include <string>
+#include <vector>
 
 #include "../util/ThreadSafeQueue.h"
 #include <atomic>
@@ -47,6 +51,7 @@ public:
 private:
   void cameraLoop();
   void aiWorkerLoop();
+  void processingLoop();
 
   // 주입된 의존성 참조 (소유하지 않음)
   ICamera &camera_;
@@ -64,19 +69,30 @@ private:
 
   // 스레드 관리
   std::atomic<bool> is_streaming_{false};
+  std::atomic<bool> is_detector_ready_{false}; // [신규] AI 모델 가용 상태 (Fail-safe)
   std::thread camera_thread_;
   std::thread ai_thread_;
+  std::thread processing_thread_;
   std::atomic<bool>* controller_running_flag_{nullptr};
 
-  // 공유 데이터 (카메라 → AI 스레드) - ThreadSafeQueue로 통합
+  // 공유 데이터 (카메라 → 처리 스레드 → AI 스레드)
+  ThreadSafeQueue<cv::Mat> processing_queue_;
   ThreadSafeQueue<cv::Mat> frame_queue_;
 
   DetectionResult shared_result_;
   std::mutex result_mutex_;
   std::mutex stop_mutex_; // stopStreaming 중복 실행 방지
+  std::mutex camera_mutex_; // camera_.read()와 release() 동기화
 
   // GStreamer 네트워크 쓰기
   cv::VideoWriter network_writer_;
+
+  // [최적화] 정합성 및 SOLID 준수를 위한 성능 모니터링
+  PerformanceMonitor perf_ai_;
+  PerformanceMonitor perf_pre_;
+  PerformanceMonitor perf_fps_cap_;
+  PerformanceMonitor perf_fps_proc_;
+
 };
 
 #endif // STREAM_PIPELINE_H

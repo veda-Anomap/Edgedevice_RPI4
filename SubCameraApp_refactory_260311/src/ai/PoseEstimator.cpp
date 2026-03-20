@@ -1,5 +1,7 @@
 #include "PoseEstimator.h"
 #include "../../config/AppConfig.h"
+#include "../util/Logger.h"
+
 #include <cmath>
 #include <ctime>
 #include <filesystem>
@@ -8,6 +10,8 @@
 #include <tensorflow/lite/interpreter.h>
 #include <tensorflow/lite/kernels/register.h>
 #include <tensorflow/lite/model.h>
+
+static const std::string TAG = "PoseEstimator";
 
 PoseEstimator::PoseEstimator(const std::string &model_path,
                              IImagePreprocessor &preprocessor)
@@ -21,13 +25,13 @@ bool PoseEstimator::initialize() {
 
   // 모델 파일 존재 확인 (std::filesystem 사용)
   if (!std::filesystem::exists(model_path_)) {
-    std::cerr << "[PoseEstimator] 모델 파일 없음: " << model_path_ << std::endl;
+    LOG_ERROR(TAG, "모델 파일 없음: " + model_path_);
     return false;
   }
 
   model_ = tflite::FlatBufferModel::BuildFromFile(model_path_.c_str());
   if (!model_) {
-    std::cerr << "[PoseEstimator] 모델 빌드 실패." << std::endl;
+    LOG_ERROR(TAG, "모델 빌드 실패.");
     return false;
   }
 
@@ -35,7 +39,7 @@ bool PoseEstimator::initialize() {
   tflite::InterpreterBuilder(*model_, resolver)(&interpreter_);
 
   if (!interpreter_) {
-    std::cerr << "[PoseEstimator] 인터프리터 생성 실패." << std::endl;
+    LOG_ERROR(TAG, "인터프리터 생성 실패.");
     return false;
   }
 
@@ -45,7 +49,7 @@ bool PoseEstimator::initialize() {
   input_ptr_ = interpreter_->template typed_input_tensor<float>(0);
   initialized_ = true;
 
-  std::cout << "[PoseEstimator] 모델 로드 완료: " << model_path_ << std::endl;
+  LOG_INFO(TAG, "모델 로드 완료: " + model_path_);
   return true;
 }
 

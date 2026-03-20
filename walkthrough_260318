@@ -1,0 +1,345 @@
+# Technical Design Report — SubCameraApp SOLID Refactoring (Phase 1 + 2)
+
+## 1. Anti-Pattern 식별 (Before)
+
+| # | 안티패턴 | 위치 | 영향 |
+|---|---|---|---|
+| 1 | **God Class** | [StreamEngine](file:///c:/Users/1-05/Downloads/pj/SubCameraApp/StreamEngine.cpp#16-19) (368줄) | 카메라, GStreamer, TFLite, 트래킹, 낙상, 렌더링, 저장, 전처리를 모두 포함 |
+| 2 | **Mixed Responsibilities** | [NetworkManager](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/fire_detection_0317/hybrid_fire_pipeline.py#282-387) (186줄) | UDP + TCP + 프로토콜 + 메시지 송신 혼합 |
+| 3 | **No Abstractions** | [SubCamController](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/controller/SubCamController.cpp#22-99) | 구체 클래스 직접 의존 |
+| 4 | **Embedded Protocol** | [NetworkManager.h](file:///c:/Users/1-05/Downloads/SubCameraApp/include/NetworkManager.h) | 프로토콜 정의가 구현체에 결합 |
+| 5 | **Magic Constants** | 전역 분산 | 30+ 상수가 각 파일에 하드코딩 |
+| 6 | **Duplicate Code** | [StreamEngine](file:///c:/Users/1-05/Downloads/pj/SubCameraApp/StreamEngine.cpp#16-19) | 드로잉 코드 2중 작성 |
+| 7 | **Coupled Preprocessing** | [PoseEstimator](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/ai/PoseEstimator.cpp#12-15) (Phase 2) | AI 추론 내부에 이미지 전처리 결합 |
+| 8 | **No Event Buffering** | 전체 | 이벤트 전/후 영상 캡처 기능 없음 |
+
+---
+
+## 2. SOLID 원칙별 변경 매핑
+
+### S — Single Responsibility
+
+| Before | After | 클래스 수 |
+|---|---|---|
+| [StreamEngine](file:///c:/Users/1-05/Downloads/pj/SubCameraApp/StreamEngine.cpp#16-19) (7개 책임) | [PoseEstimator](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/ai/PoseEstimator.cpp#12-15), `PersonTracker`, `FallDetector`, `FrameRenderer`, [FrameSaver](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/util/FrameSaver.cpp#8-10), [GStreamerCamera](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/stream/GStreamerCamera.cpp#4-7), [StreamPipeline](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/stream/StreamPipeline.h#33-39), **`ImagePreprocessor`**, **[CircularFrameBuffer](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/buffer/CircularFrameBuffer.cpp#4-9)**, **[EventRecorder](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/buffer/EventRecorder.cpp#6-14)** | 10 |
+| [NetworkManager](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/fire_detection_0317/hybrid_fire_pipeline.py#282-387) (4개 책임) | [BeaconService](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/network/BeaconService.cpp#10-11), [CommandServer](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/network/CommandServer.cpp#10-11), [NetworkFacade](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/network/NetworkFacade.cpp#11-26), **[ChunkedStreamTransmitter](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/transmitter/ChunkedStreamTransmitter.cpp#6-13)** | 4 |
+
+### O — Open/Closed
+
+| 인터페이스 | 교체 가능 구현체 |
+|---|---|
+| `IAiDetector` | TFLite → TensorRT, ONNX Runtime 등 |
+| `ICamera` | GStreamer → V4L2, USB, IP Camera 등 |
+| **`IImagePreprocessor`** | BGR/RGB → NV12, YUYV 등 하드웨어 네이티브 |
+| **`IStreamTransmitter`** | TCP Chunked → UDP, WebRTC, MQTT 등 |
+
+### I — Interface Segregation
+
+| 인터페이스 | 메서드 | 소비자 |
+|---|---|---|
+| `INetworkSender` | [sendMessage()](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/network/NetworkFacade.cpp#44-65) | StreamPipeline |
+| `ICommandReceiver` | [start(cb)](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/fire_detection_0317/hybrid_fire_pipeline.py#297-303), [stop()](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/fire_detection_0317/hybrid_fire_pipeline.py#385-387) | SubCamController |
+| **`IImagePreprocessor`** | `preprocess(frame)` | PoseEstimator |
+| **`IStreamTransmitter`** | [setTarget()](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/transmitter/ChunkedStreamTransmitter.cpp#16-20), [transmit()](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/transmitter/ChunkedStreamTransmitter.cpp#23-93) | EventRecorder |
+
+### D — Dependency Inversion
+
+```mermaid
+graph TD
+    subgraph "Composition Root (SubCamController.cpp)"
+        CR[SubCamController]
+    end
+
+    subgraph "인터페이스 계층"
+        ICR[ICommandReceiver]
+        INS[INetworkSender]
+        IC[ICamera]
+        IAD[IAiDetector]
+        IIP["IImagePreprocessor"]
+        IST["IStreamTransmitter"]
+    end
+
+    subgraph "구현체 계층"
+        NF[NetworkFacade] -->|구현| ICR
+        NF -->|구현| INS
+        GC[GStreamerCamera] -->|구현| IC
+        PE[PoseEstimator] -->|구현| IAD
+        IP["ImagePreprocessor"] -->|구현| IIP
+        CST["ChunkedStreamTransmitter"] -->|구현| IST
+    end
+
+    CR -.-> ICR
+    CR -.-> IC
+    CR -.-> IAD
+    CR -.-> IIP
+    CR -.-> IST
+    PE -.->|DIP| IIP
+```
+
+---
+
+## 3. Before vs After 아키텍처
+
+### Before (Phase 0): 3개 파일, 강한 결합
+
+```mermaid
+graph LR
+    M[main] --> C[SubCamController]
+    C --> NM["NetworkManager<br>(186줄)"]
+    C --> SE["StreamEngine<br>(368줄, 전처리 포함)"]
+    SE -.->|콜백| NM
+
+    style NM fill:#ff6b6b
+    style SE fill:#ff6b6b
+```
+
+### After (Phase 1 + 2): 9개 모듈, 느슨한 결합
+
+```mermaid
+graph TD
+    M[main.cpp] --> CTRL[SubCamController]
+
+    subgraph "Network"
+        CTRL -.->|ICommandReceiver| NF[NetworkFacade]
+        NF --> BS[BeaconService]
+        NF --> CS[CommandServer]
+    end
+
+    subgraph "Stream"
+        CTRL --> SP[StreamPipeline]
+        SP -.->|ICamera| GC[GStreamerCamera]
+        SP -.->|INetworkSender| NF
+    end
+
+    subgraph "AI"
+        SP -.->|IAiDetector| PE[PoseEstimator]
+        PE -.->|IImagePreprocessor| IP["ImagePreprocessor"]
+        SP --> PT[PersonTracker]
+        SP --> FD[FallDetector]
+    end
+
+    subgraph "Buffer"
+        SP --> CFB["CircularFrameBuffer"]
+        SP --> ER["EventRecorder"]
+        ER --> CFB
+    end
+
+    subgraph "Transmitter"
+        ER -.->|IStreamTransmitter| CST["ChunkedStreamTransmitter"]
+    end
+
+    subgraph "Utility"
+        SP --> FR[FrameRenderer]
+        SP --> FS[FrameSaver]
+    end
+
+    style IP fill:#74b9ff
+    style CFB fill:#74b9ff
+    style ER fill:#74b9ff
+    style CST fill:#74b9ff
+```
+
+> [!NOTE]
+> 파란색 노드는 Phase 2에서 추가된 컴포넌트
+
+---
+
+## 4. CircularFrameBuffer 설계
+
+```mermaid
+sequenceDiagram
+    participant CAM as 카메라 루프
+    participant BUF as CircularFrameBuffer
+    participant AI as AI 스레드
+    participant ER as EventRecorder
+    participant TX as ChunkedStreamTransmitter
+
+    loop 매 프레임 (30fps)
+        CAM->>BUF: push(frame) → shared_ptr<Mat> clone
+        CAM->>ER: feedFrame(frame) → post-event 수집
+    end
+
+    AI->>AI: 낙상 감지!
+    AI->>ER: triggerEvent(track_id)
+    ER->>BUF: snapshot() → shared_ptr 복사 (잠금 최소화)
+    Note over BUF: 150개 shared_ptr 복사 ≈ O(N) 포인터 연산<br>cv::Mat 픽셀 복사 없음
+
+    loop 5초 동안
+        CAM->>ER: feedFrame(frame)
+    end
+
+    ER->>ER: pre + post 병합
+    ER->>TX: transmit(300 frames, track_id)
+    TX->>TX: JPEG 인코딩 + 청크 헤더 + TCP 전송<br>실패 시 최대 3회 재시도
+```
+
+**메모리 관리:**
+- `std::shared_ptr<cv::Mat>` 사용 → 참조 카운팅으로 자동 해제
+- [snapshot()](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/buffer/CircularFrameBuffer.cpp#22-49) 시 `shared_ptr` 복사만 수행 (≈1.2KB, 150 포인터)
+- [push()](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/util/ThreadSafeQueue.h#19-33) 시 `frame.clone()` → 원본과 메모리 독립
+
+**스레드 안전성:**
+- `std::mutex`로 [push()](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/util/ThreadSafeQueue.h#19-33)와 [snapshot()](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/buffer/CircularFrameBuffer.cpp#22-49) 보호
+- [snapshot()](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/buffer/CircularFrameBuffer.cpp#22-49)의 잠금 시간: [O(N)](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/edge_device/uart_port.cpp#79-82) 포인터 복사 (픽셀 데이터 복사 아님)
+- 150 프레임 기준 ≈ **수 마이크로초** (카메라 루프 33ms에 무시 가능)
+
+---
+
+## 5. Containerless Chunked Protocol
+
+```
+┌─────────────────────────────────────────────────┐
+│ ChunkHeader (26 bytes)                          │
+├────────┬──────────┬───────────┬────────┬────────┤
+│ magic  │ track_id │ frame_idx │ total  │ size   │
+│ "EVTC" │ int32    │ int32     │ int32  │ uint32 │
+│ 4B     │ 4B       │ 4B        │ 4B     │ 4B     │
+├────────┴──────────┴───────────┴────────┴────────┤
+│ timestamp_ms (int64, 8 bytes)                   │
+├─────────────────────────────────────────────────┤
+│ JPEG Data (variable size, ~20-60KB per frame)   │
+└─────────────────────────────────────────────────┘
+```
+
+**재시도 메커니즘:**
+1. 전송 실패 → 소켓 닫기 → 200ms 대기 → 재연결 시도
+2. 최대 `TRANSMITTER_MAX_RETRIES` (기본 3회) 재시도
+3. 부분 전송 처리: `sendAll()` 루프로 모든 바이트 완전 전송 보장
+4. 모든 실패는 `std::cerr` 에러 로깅
+
+---
+
+## 6. 최종 디렉토리 구조 (43 파일)
+
+```
+SubCameraApp/
+├── CMakeLists.txt
+├── Makefile
+├── LICENSE
+├── README.md
+├── config/
+│   └── AppConfig.h                          # 중앙 설정
+└── src/
+    ├── main.cpp                             # 진입점
+    ├── controller/
+    │   ├── SubCamController.h               # DIP Composition Root
+    │   └── SubCamController.cpp
+    ├── protocol/
+    │   └── PacketProtocol.h                 # 패킷 규격 [S]
+    ├── network/
+    │   ├── INetworkSender.h                 # 인터페이스 [I,D]
+    │   ├── ICommandReceiver.h               # 인터페이스 [I,D]
+    │   ├── BeaconService.h/.cpp             # UDP 비콘 [S]
+    │   ├── CommandServer.h/.cpp             # TCP 서버 [S]
+    │   └── NetworkFacade.h/.cpp             # 파사드 [S,D]
+    ├── ai/
+    │   ├── IAiDetector.h                    # 인터페이스 [O,D]
+    │   ├── PoseEstimator.h/.cpp             # TFLite 추론 [S,D]
+    │   ├── PersonTracker.h/.cpp             # 트래킹 [S]
+    │   └── FallDetector.h/.cpp              # 낙상 로직 [S]
+    ├── imageprocessing/                     # ★ Phase 2
+    │   ├── IImagePreprocessor.h             # 인터페이스 [I,D]
+    │   ├── ImagePreprocessor.h              # 전처리 파이프라인 [S,L]
+    │   └── ImagePreprocessor.cpp
+    ├── buffer/                              # ★ Phase 2
+    │   ├── CircularFrameBuffer.h/.cpp       # 링 버퍼 [S]
+    │   └── EventRecorder.h/.cpp             # 이벤트 클립 수집 [S]
+    ├── transmitter/                         # ★ Phase 2
+    │   ├── IStreamTransmitter.h             # 인터페이스 [O,D]
+    │   ├── ChunkedStreamTransmitter.h       # 청크 전송 [S,L]
+    │   └── ChunkedStreamTransmitter.cpp
+    ├── stream/
+    │   ├── ICamera.h                        # 인터페이스 [D]
+    │   ├── GStreamerCamera.h/.cpp            # GStreamer 카메라 [S,L]
+    │   └── StreamPipeline.h/.cpp            # 오케스트레이터 [S,D]
+    ├── rendering/
+    │   └── FrameRenderer.h/.cpp             # 시각화 [S]
+    └── util/
+        └── FrameSaver.h/.cpp                # 파일 저장 [S]
+```
+
+---
+
+## 7. 파일별 SOLID 태그 요약
+
+| 모듈 | 파일 | SOLID | 신규/수정 |
+|---|---|---|---|
+| config | [AppConfig.h](file:///c:/Users/1-05/Downloads/SubCameraApp/config/AppConfig.h) | S | 수정 |
+| protocol | [PacketProtocol.h](file:///c:/Users/1-05/Downloads/SubCameraApp/src/protocol/PacketProtocol.h) | S | — |
+| network | [INetworkSender.h](file:///c:/Users/1-05/Downloads/SubCameraApp/src/network/INetworkSender.h) | I,D | — |
+| network | [ICommandReceiver.h](file:///c:/Users/1-05/Downloads/SubCameraApp/src/network/ICommandReceiver.h) | I,D | — |
+| network | [BeaconService](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/network/BeaconService.cpp#10-11) | S | — |
+| network | [CommandServer](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/network/CommandServer.cpp#10-11) | S,I | — |
+| network | [NetworkFacade](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/network/NetworkFacade.cpp#11-26) | S,D | — |
+| ai | [IAiDetector.h](file:///c:/Users/1-05/Downloads/SubCameraApp/src/ai/IAiDetector.h) | O,D | — |
+| ai | [PoseEstimator](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/ai/PoseEstimator.cpp#12-15) | S,D | **수정**: DIP로 `IImagePreprocessor` 주입 |
+| ai | `PersonTracker` | S | — |
+| ai | `FallDetector` | S | — |
+| **imageprocessing** | [IImagePreprocessor.h](file:///c:/Users/1-05/Downloads/SubCameraApp/src/imageprocessing/IImagePreprocessor.h) | I,D | **★ Phase 2 신규** |
+| **imageprocessing** | `ImagePreprocessor` | S,L | **★ Phase 2 신규** |
+| **buffer** | [CircularFrameBuffer](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/buffer/CircularFrameBuffer.cpp#4-9) | S | **★ Phase 2 신규** |
+| **buffer** | [EventRecorder](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/buffer/EventRecorder.cpp#6-14) | S | **★ Phase 2 신규** |
+| **transmitter** | [IStreamTransmitter.h](file:///c:/Users/1-05/Downloads/SubCameraApp/src/transmitter/IStreamTransmitter.h) | O,D | **★ Phase 2 신규** |
+| **transmitter** | [ChunkedStreamTransmitter](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/transmitter/ChunkedStreamTransmitter.cpp#6-13) | S,L | **★ Phase 2 신규** |
+| stream | [ICamera.h](file:///c:/Users/1-05/Downloads/SubCameraApp/src/stream/ICamera.h) | D | — |
+| stream | [GStreamerCamera](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/stream/GStreamerCamera.cpp#4-7) | S,L | — |
+| stream | [StreamPipeline](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/stream/StreamPipeline.h#33-39) | S,D | **수정**: 버퍼+이벤트 녹화 통합 |
+| rendering | `FrameRenderer` | S | — |
+| util | [FrameSaver](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/util/FrameSaver.cpp#8-10) | S | — |
+| controller | [SubCamController](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/controller/SubCamController.cpp#22-99) | D | **수정**: Phase 2 컴포넌트 조립 |
+| — | [main.cpp](file:///c:/Users/1-05/Downloads/SubCameraApp/src/main.cpp) | — | — |
+
+---
+
+## 8. 교체 가능성 매트릭스
+
+| 계층 | 현재 구현 | 교체 시 수정 범위 |
+|---|---|---|
+| AI 추론 | TFLite ([PoseEstimator](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory/src/ai/PoseEstimator.cpp#12-15)) | 새 `IAiDetector` 구현체 + [SubCamController.cpp](file:///c:/Users/1-05/Downloads/SubCameraApp/SubCamController.cpp)만 변경 |
+| 이미지 전처리 | BGR→RGB→Float32 (`ImagePreprocessor`) | 새 `IImagePreprocessor` 구현체만 변경 |
+| 영상 전송 | TCP Chunked JPEG ([ChunkedStreamTransmitter](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/transmitter/ChunkedStreamTransmitter.cpp#6-13)) | 새 `IStreamTransmitter` 구현체만 변경 |
+| 카메라 입력 | GStreamer ([GStreamerCamera](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/stream/GStreamerCamera.cpp#4-7)) | 새 `ICamera` 구현체만 변경 |
+| 메타 전송 | TCP Binary ([NetworkFacade](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/network/NetworkFacade.cpp#11-26)) | 새 `INetworkSender` 구현체만 변경 |
+
+> [!IMPORTANT]
+> 모든 교체는 **[SubCamController.cpp](file:///c:/Users/1-05/Downloads/SubCameraApp/SubCamController.cpp) (Composition Root)**의 생성자에서 구현체만 바꾸면 됩니다. 비즈니스 로직 ([StreamPipeline](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/stream/StreamPipeline.h#33-39), `FallDetector` 등)은 **일체 수정 불필요**.
+
+---
+
+## 9. Recent Stability & Optimization Fixes (Current Task)
+
+Refactoring 이후 실제 운영 환경에서 발견된 병목 지연 및 크래시 이슈를 해결한 최종 최적화 내역입니다.
+
+### A. STM32 UART 통신 안정화 (Packet Sync Fix)
+- **현상**: 모터 제어 시 타임아웃 발생 및 센서 데이터 헤더 파싱 에러(`header fail`) 반복.
+- **원인**: 150ms의 짧은 타임아웃과 이전 패킷의 잔여 데이터가 OS 버퍼에 남아있어 다음 패킷과 엇갈림.
+- **해결**:
+    - `uart_timeout_ms`를 1000ms로 상향 조정 (느린 센서 응답 대응).
+    - 송신 직전 `tcflush(fd, TCIOFLUSH)`를 호출하여 수신 버퍼의 쓰레기 데이터를 강제 소거.
+- **결과**: 드롭 없는 안정적인 센서 데이터 수집 및 정확한 모터 응답 확인.
+
+### B. 파이썬-C++ 영상 송출 동기화
+- **현상**: [hybrid_fire_pipeline.py](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/fire_detection_0317/hybrid_fire_pipeline.py)의 영상 스트리밍 품질이 C++ 메인 앱과 차이가 발생.
+- **원인**: GStreamer 파이프라인 옵션(Queue, Config-interval) 불일치.
+- **해결**: C++의 [StreamPipeline.cpp](file:///c:/Users/1-05/Downloads/SubCameraApp/src/stream/StreamPipeline.cpp)와 동일한 `rtph264pay config-interval=1` 및 `queue` 설정을 파이썬 코드에 적용.
+- **결과**: 두 언어 구현체 간 동일한 네트워크 대역폭 및 스트리밍 품질 확보.
+
+### C. Graceful Shutdown & Long-run Stability (RequestWrap Crash 해결)
+- **현상**: 
+  - (종료 시) `libcamerasrc`가 [read()](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/fire_detection_0317/hybrid_fire_pipeline.py#58-62) 대기 중일 때 스레드 조인 시 크래시.
+  - (장기 구동 시) AI 부하가 일시적으로 스파이크를 일으키면 GStreamer 내부 버퍼가 고갈되어 Assertion Failure 발생.
+- **해결**:
+    - **버퍼 풀 확장**: `libcamerasrc buffer-count=12`로 늘려 AI 지연 시간을 견딜 수 있는 여유분 확보.
+    - **디커플링 큐**: 하드웨어 소스와 변환부 사이에 `queue`를 추가하여 병목 현상 전파 차단.
+    - **상태 체크 강화**: `camera_.read()` 직전에 `is_streaming_`을 재검토하여 데이터 레이스 2중 방어.
+- **성능 모니터링 기능 추가**: 5초마다 콘솔에 `Avg AI Latency`를 출력하여 시스템 부하 상태를 실시간 프로파일링 가능.
+- **결과**: 1080p 고해상도를 유지하면서도 수 시간 이상의 장기 구동 및 잦은 종료에도 크래시 없는 안정성 달성.
+
+---
+
+## 10. How to Profile Performance
+
+새로 추가된 모니터링 로그를 통해 시스템 상태를 확인할 수 있습니다:
+
+1. **AI 처리 지연**: `[Performance] Avg AI Latency: XX ms` 로그를 확인하세요. 이 값이 150ms를 넘어가면 프레임 드랍이 발생할 수 있습니다.
+2. **카메라 정체 감지**: 만약 `[Performance Warning] GStreamer Read Blocked` 메시지가 뜬다면, GStreamer 내부 버퍼가 거의 다 찼다는 신호입니다. 이 경우 `AppConfig::AI_INFERENCE_INTERVAL`을 조금 더 늘려 부하를 조절하는 것이 좋습니다.

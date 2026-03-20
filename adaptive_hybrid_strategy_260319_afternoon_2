@@ -1,0 +1,50 @@
+# Adaptive Enhancement & Hybrid Strategy (v2026)
+
+This document explains the tunable parameters of the implementation and proposes a hybrid strategy that adapts to illumination levels.
+
+---
+
+## 1. ToneMapping Tunable Parameters
+
+The current [ToneMappingEnhancer](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/imageprocessing/AdvancedEnhancers.h#26-27) has several hidden knobs that can be exposed for dynamic tuning:
+
+| Parameter | Type | Range | Effect |
+| :--- | :--- | :--- | :--- |
+| **Gamma Target (0.5f)** | `float` | 0.3 ~ 0.7 | 조도 보정의 기준점. 낮을수록(0.3) 더 공격적으로 밝게 만듭니다. |
+| **Filtered Radius (16)** | `int` | 8 ~ 32 | 조명 맵의 해상도. 클수록 넓은 영역의 조명이 평탄해지지만 연산량이 늘어납니다. |
+| **Epsilon (0.01)** | `float` | 0.001 ~ 0.1 | 조명 맵의 정밀도. 작을수록 미세한 그림자까지 살리지만 노이즈가 강조될 수 있습니다. |
+| **Detail Gain (1.0~1.8)** | `float` | 0.5 ~ 3.0 | 엣지 강화 강도. 어두운 곳에서는 1.5 이상으로 높여 디테일을 살립니다. |
+
+---
+
+## 2. Proposed Adaptive Hybrid Strategy
+
+단일 필터 대신, **Mean Illumination(평균 조도)**에 따라 최적의 알고리즘 세트를 조합하는 하이브리드 방식입니다.
+
+### [Strategy Table]
+
+| 단계 | 조도(Mean) | 추천 알고리즘 조합 (Hybrid) | 최적화 포인트 |
+| :--- | :--- | :--- | :--- |
+| **LV 1 (Bright)** | > 180 | **Bypass** | 전력 및 발열 최소화. |
+| **LV 2 (Normal)** | 100 ~ 180 | **Retinex (CLAHE)** | 자연스러운 톤 보정. |
+| **LV 3 (Dim)** | 70 ~ 100 | **ToneMapping (NEON)** | 조명 융합을 통한 시인성 확보. |
+| **LV 4 (Extreme)** | < 70 | **ToneMap + DetailBoost** | 극한의 암부 디테일 복원. |
+
+---
+
+## 3. Rationale (알고리즘 채택 근거)
+
+[AdaptiveHybridEnhancer](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/src/imageprocessing/AdvancedEnhancers.cpp#247-250)가 위와 같은 구조를 갖는 이유는 Raspberry Pi 4 환경의 **하드웨어 제약**과 **광학적 특성**을 동시에 고려했기 때문입니다.
+
+1.  **컴퓨팅 리소스 분배 (CPU & Thermal)**:
+    - 밝은 환경(LV 1)에서 복잡한 톤매핑을 수행하는 것은 중복 연산입니다. 이 때 절약한 CPU 자원을 AI 추론 주기를 높이거나 인코딩 안정성을 확보하는 데 사용할 수 있습니다.
+2.  **신호 대 잡음비(SNR) 최적화**:
+    - 매우 어두운 환경(LV 4)에서는 단순 톤 보정만으로 노이즈가 함께 증폭됩니다. 따라서 [DetailBoost](file:///c:/Users/1-05/Downloads/SubCameraApp_refactory_260311/SubCameraApp_refactory_260311/compare_0311.cpp#393-418)와 결합하여 유의미한 엣지 신호만 선별적으로 강화하는 것이 효과적입니다.
+3.  **시각적 연속성 (Stability)**:
+    - Hysteresis 로직을 통해 조도가 경계값에서 1~2 차이로 변할 때 필터가 요동치는 '팝핑(Popping)' 현상을 차단하여 사용자에게 안정적인 영상 경험을 제공합니다.
+4.  **에너지 효율 (Power Efficiency)**:
+    - NEON 연산은 일반 연산보다 전력 대비 성능비가 뛰어납니다. 필요한 시점(LV 3/4)에만 SIMD를 활성화하여 기기 수명을 연장합니다.
+
+**고려 점**: 조도가 경계값(예: 80) 근처에서 진동할 경우 필터가 바뀌며 화면이 깜빡일 수 있습니다. 이를 방지하기 위해 **Hysteresis (임계값 이력)** 또는 **Exponential Smoothing (지수 평활법)**을 적용해야 합니다.
+
+*Designed by Antigravity AI - Computational Photography Engineer*

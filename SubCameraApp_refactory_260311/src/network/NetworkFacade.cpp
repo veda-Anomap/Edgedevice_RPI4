@@ -1,5 +1,6 @@
 #include "NetworkFacade.h"
 #include "../protocol/PacketProtocol.h"
+#include "../util/Logger.h"
 
 #include <arpa/inet.h>
 #include <cstring>
@@ -7,6 +8,8 @@
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
+
+static const std::string TAG = "NetworkFacade";
 
 NetworkFacade::NetworkFacade() {
   beacon_ = std::make_unique<BeaconService>();
@@ -17,9 +20,9 @@ NetworkFacade::NetworkFacade() {
       [this](bool connected, int /*client_fd*/) {
         beacon_->setConnected(connected);
         if (connected) {
-          std::cout << "[NetworkFacade] 연결됨 → 비콘 중지" << std::endl;
+          LOG_INFO(TAG, "연결됨 → 비콘 중지");
         } else {
-          std::cout << "[NetworkFacade] 연결 끊김 → 비콘 재개" << std::endl;
+          LOG_INFO(TAG, "연결 끊김 → 비콘 재개");
         }
       });
 }
@@ -30,7 +33,7 @@ void NetworkFacade::start(CommandCallback callback) {
   command_server_->start([callback](const std::string &ip, int port, const std::string &body) {
     if (callback) callback(ip, port, body);
   });
-  std::cout << "[NetworkFacade] 네트워크 시작됨." << std::endl;
+  LOG_INFO(TAG, "네트워크 시작됨.");
 }
 
 void NetworkFacade::stop() {
@@ -38,7 +41,7 @@ void NetworkFacade::stop() {
     command_server_->stop();
   if (beacon_)
     beacon_->stop();
-  std::cout << "[NetworkFacade] 네트워크 정지됨." << std::endl;
+  LOG_INFO(TAG, "네트워크 정지됨.");
 }
 
 void NetworkFacade::sendMessage(const std::string &msg) {

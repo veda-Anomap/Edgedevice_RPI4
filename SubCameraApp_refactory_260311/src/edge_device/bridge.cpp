@@ -1,7 +1,7 @@
 #include "bridge.h"
+#include "../util/Logger.h"
 #include "stm32_proto.h"
 
-#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -9,21 +9,24 @@
 #include <functional>
 #include <iomanip>
 #include <iostream>
+#include <nlohmann/json.hpp>
 #include <set>
 #include <thread>
 #include <vector>
 
 
+static const std::string TAG = "Bridge";
+
 namespace edge_device {
 
 using json = nlohmann::json;
 
-bool Logger::open(const std::string &path) {
+bool BridgeLogger::open(const std::string &path) {
   ofs_.open(path, std::ios::app);
   return ofs_.is_open();
 }
 
-void Logger::log(const std::string &level, const std::string &msg) {
+void BridgeLogger::log(const std::string &level, const std::string &msg) {
   std::lock_guard<std::mutex> lock(mu_);
 
   auto now = std::chrono::system_clock::now();
@@ -42,8 +45,7 @@ void Bridge::setSender(INetworkSender *sender) { sender_ = sender; }
 
 void Bridge::run(std::atomic<bool> *stop_flag) {
   if (!logger_.open(cfg_.log_file)) {
-    std::cerr << "[Bridge] Failed to open log file: " << cfg_.log_file
-              << std::endl;
+    LOG_ERROR(TAG, "Failed to open log file: " + cfg_.log_file);
   }
 
   if (!uart_.openPort(cfg_.serial_port, cfg_.serial_baud)) {
@@ -119,21 +121,50 @@ void Bridge::uartLoop(std::atomic<bool> *stop_flag) {
     if (cmd.type == UartCommand::Type::MOTOR_CMD) {
       StmFrame frame;
       std::string ferr;
-      
-      std::cout << "\033[1;33m[UART-SEND]\033[0m Motor Payload: " << cmd.payload << std::endl;
-      
-      uart_.flush(); // [DIP 최적화] 이전 통신 지연으로 남은 쓰레기 버퍼 비우기
-      if (Stm32Proto::sendFrame(uart_, Stm32Proto::CMD_MOTOR, cmd.payload)) {
-        if (!Stm32Proto::readFrame(uart_, cfg_.uart_timeout_ms, frame, ferr)) {
-          logger_.log("ERROR", "UART motor cmd failed: " + ferr);
-          std::cerr << "\033[1;31m[UART-ERROR]\033[0m Motor Read Fail: " << ferr << std::endl;
-        } else {
-          logger_.log("INFO", "Motor command relay OK");
-          std::cout << "\033[1;32m[UART-RECV]\033[0m Motor Ack Payload: " << frame.payload_json << std::endl;
+      bool motor_success = false;
+      bool resent = false;
+      int max_attempts = 1 + cfg_.motor_retries;
+
+      for (int attempt = 1; attempt <= max_attempts; ++attempt) {
+        if (attempt > 1) {
+          LOG_WARN(TAG, "Motor CMD Resending... (Attempt " + std::to_string(attempt) + "/" + std::to_string(max_attempts) + ")");
+          resent = true;
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
+
+        // [최적화] 이전 명령의 지연 응답이나 버퍼의 쓰레기 데이터 정리
+        LOG_DEBUG(TAG, "Motor CMD 전송 전 UART 버퍼 Flush 수행 (시도 " + std::to_string(attempt) + ")");
+        uart_.flush();
+
+        if (Stm32Proto::sendFrame(uart_, Stm32Proto::CMD_MOTOR, cmd.payload)) {
+          // 1차 응답 대기 (기본 타임아웃)
+          if (Stm32Proto::readFrame(uart_, cfg_.uart_timeout_ms, frame, ferr)) {
+            motor_success = true;
+            break;
+          }
+
+          // [중요] 타임아웃 시 바로 재전송하지 않고, 늦게 도착할 응답을 위해 한 번 더 읽어봅니다.
+          // 이를 통해 "이미 실행은 되었으나 응답만 늦은" 경우의 이중 동작(Over-rotation)을 방지합니다.
+          LOG_DEBUG(TAG, "Read timeout. Polling once more for late ACK before retry...");
+          std::this_thread::sleep_for(std::chrono::milliseconds(100));
+          if (Stm32Proto::readFrame(uart_, 500, frame, ferr)) {
+            LOG_INFO(TAG, "Late Motor ACK caught after " + std::to_string(cfg_.uart_timeout_ms + 100) + "ms");
+            motor_success = true;
+            break;
+          }
+          
+          LOG_ERROR(TAG, "Motor Read Fail (Attempt " + std::to_string(attempt) + "): " + ferr);
+        } else {
+          LOG_ERROR(TAG, "Motor Send Fail (Attempt " + std::to_string(attempt) + ")");
+        }
+      }
+
+      if (motor_success) {
+        logger_.log("INFO", resent ? "Motor command relay OK after retry" : "Motor command relay OK");
+        LOG_DEBUG(TAG, "Motor Ack Payload: " + frame.payload_json);
       } else {
-        logger_.log("ERROR", "UART motor send failed");
-        std::cerr << "\033[1;31m[UART-ERROR]\033[0m Motor Send Fail" << std::endl;
+        logger_.log("ERROR", "Motor command failed after " + std::to_string(max_attempts) + " attempts");
+        LOG_ERROR(TAG, "Motor Final Fail");
       }
     }
     // ----- 2. 센서 수집 처리 -----
@@ -143,18 +174,19 @@ void Bridge::uartLoop(std::atomic<bool> *stop_flag) {
       bool success = false;
 
       // 센서 수집 요청 (Payload 없음)
-      std::cout << "\033[1;33m[UART-SEND]\033[0m Sensor Poll Request" << std::endl;
+      LOG_DEBUG(TAG, "Sensor Poll Request");
 
-      uart_.flush(); // [DIP 최적화] 버퍼의 만료된 응답이나 깨진 패킷의 헤더 잔재 비우기
+      uart_.flush(); // [DIP 최적화] 버퍼의 만료된 응답이나 깨진 패킷의 헤더
+                     // 잔재 비우기
       if (Stm32Proto::sendFrame(uart_, Stm32Proto::CMD_STATUS, "")) {
         success =
             Stm32Proto::readFrame(uart_, cfg_.uart_timeout_ms, frame, ferr);
       }
 
       if (success) {
-        std::cout << "\033[1;32m[UART-RECV]\033[0m Sensor Data Payload: " << frame.payload_json << std::endl;
+        LOG_DEBUG(TAG, "Sensor Data Payload: " + frame.payload_json);
       } else if (!ferr.empty()) {
-        std::cerr << "\033[1;31m[UART-ERROR]\033[0m Sensor Read Fail: " << ferr << std::endl;
+        LOG_ERROR(TAG, "Sensor Read Fail: " + ferr);
       }
 
       if (success && frame.cmd == Stm32Proto::CMD_STATUS) {
@@ -176,18 +208,13 @@ void Bridge::uartLoop(std::atomic<bool> *stop_flag) {
           sender_->sendSensorData(out);
           // 콘솔 출력
           if (cfg_.sensor_batch_size == 1) {
-            std::cout << "\033[1;36m[SENSOR]\033[0m 1 point forwarded to "
-                         "NetworkFacade"
-                      << std::endl;
+            LOG_INFO(TAG, "1 point forwarded to NetworkFacade");
           } else {
-            std::cout << "\033[1;36m[SENSOR-BATCH]\033[0m "
-                      << sensor_buffer.size() << " points forwarded."
-                      << std::endl;
+            LOG_INFO(TAG, std::to_string(sensor_buffer.size()) +
+                              " points forwarded.");
           }
         } else {
-          std::cout
-              << "\033[1;33m[BRIDGE-DIP]\033[0m Sender not set. Data dropped."
-              << std::endl;
+          LOG_WARN(TAG, "Sender not set. Data dropped.");
         }
         sensor_buffer.clear();
       }
@@ -210,8 +237,7 @@ bool Bridge::handleMotorCmd(const std::string &cmd) {
     queue_cv_.notify_one();
   }
 
-  std::cout << "\033[1;35m[MOTOR-CMD]\033[0m Queued command: " << cmd
-            << std::endl;
+  LOG_DEBUG(TAG, "Queued command: " + cmd);
   return true;
 }
 
@@ -233,8 +259,8 @@ bool Bridge::parseMotorCmdJson(const std::string &body_json, std::string &cmd) {
 }
 
 bool Bridge::validMotorCmd(const std::string &cmd) {
-  static const std::set<std::string> allowed = {"w",    "a",      "s",  "d",
-                                                "auto", "unauto", "manual", "on", "off"};
+  static const std::set<std::string> allowed = {
+      "w", "a", "s", "d", "auto", "unauto", "manual", "on", "off"};
   return allowed.find(cmd) != allowed.end();
 }
 

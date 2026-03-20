@@ -1,15 +1,19 @@
 #include "EventRecorder.h"
 #include "../../config/AppConfig.h"
+#include "../util/Logger.h" // Added include for Logger
+
 #include <chrono>
-#include <iostream>
+// Removed #include <iostream> as it's replaced by Logger
+#include <string> // Required for std::to_string
+
+static const std::string TAG = "EventRecorder"; // Added TAG definition
 
 EventRecorder::EventRecorder(CircularFrameBuffer &buffer,
                              IStreamTransmitter &transmitter,
                              int post_event_frames)
     : buffer_(buffer), transmitter_(transmitter),
       post_event_frames_(post_event_frames) {
-  std::cout << "[EventRecorder] 초기화 완료 (post-event: " << post_event_frames_
-            << " 프레임)" << std::endl;
+  LOG_INFO(TAG, "초기화 완료 (post-event: " + std::to_string(post_event_frames_) + " 프레임)");
 }
 
 EventRecorder::~EventRecorder() {
@@ -29,6 +33,7 @@ void EventRecorder::triggerEvent(int track_id) {
                          .count();
       if (elapsed < AppConfig::EVENT_COOLDOWN_SEC) {
         // 아직 쿨다운 중이면 무시
+        LOG_DEBUG(TAG, "트랙 ID " + std::to_string(track_id) + " 쿨다운 중. 이벤트 무시.");
         return;
       }
     }
@@ -42,15 +47,14 @@ void EventRecorder::triggerEvent(int track_id) {
     // 2. [안정성] 대기 큐 인원 제한 (메모리 폭주 방지)
     std::lock_guard<std::mutex> lock(pending_mutex_);
     if (pending_events_.size() >= AppConfig::EVENT_RECORDER_MAX_PENDING) {
-      std::cerr << "[EventRecorder] 경고: 대기 큐 가득 참. 이벤트 드랍 (ID: "
-                << track_id << ")" << std::endl;
+      LOG_WARN(TAG, "경고: 대기 큐 가득 참. 이벤트 드랍 (ID: " + std::to_string(track_id) + ")");
       return;
     }
 
     // 녹화 중이면 큐에 적재 (이벤트 누락 방지)
     pending_events_.push({track_id, std::move(snapshot)});
-    std::cout << "[EventRecorder] 이벤트 큐에 적재 (ID: " << track_id
-              << ", 대기 중: " << pending_events_.size() << "건)" << std::endl;
+    LOG_INFO(TAG, "이벤트 큐 적재 (ID: " + std::to_string(track_id) + 
+                  ", 대기 중: " + std::to_string(pending_events_.size()) + "건)");
     return;
   }
 
@@ -64,12 +68,12 @@ void EventRecorder::startRecording(int track_id,
   current_track_id_ = track_id;
   pre_frames_ = std::move(pre_snapshot);
 
-  std::cout << "[EventRecorder] 이벤트 트리거됨 (ID: " << track_id
-            << "), pre-event: " << pre_frames_.size() << " 프레임" << std::endl;
+  LOG_INFO(TAG, "이벤트 트리거됨 (ID: " + std::to_string(track_id) + 
+                "), pre-event: " + std::to_string(pre_frames_.size()) + " 프레임");
 
   // post-event 수집 초기화
   {
-    std::lock_guard<std::mutex> lock(post_mutex_);
+    std::lock_guard<std::mutex> lock(state_mutex_);
     post_frames_.clear();
     post_frames_.reserve(post_event_frames_);
   }
@@ -84,28 +88,35 @@ void EventRecorder::feedFrame(const cv::Mat &frame) {
   if (post_count_ >= post_event_frames_) {
     is_recording_ = false;
 
-    // 전송할 데이터 로컬 스케줄링 (이동)
-    std::vector<FramePtr> pre_to_send = std::move(pre_frames_);
+    // [최적화] 전송할 데이터 로컬 스냅샷 확보 (락 시간 최소화)
+    std::vector<FramePtr> pre_to_send;
     std::vector<FramePtr> post_to_send;
+    int track_id = -1;
     {
-      std::lock_guard<std::mutex> lock(post_mutex_);
+      std::lock_guard<std::mutex> lock(state_mutex_);
+      pre_to_send = std::move(pre_frames_);
       post_to_send = std::move(post_frames_);
+      track_id = current_track_id_;
     }
 
+    // [중요] 이전 전송 스레드를 기다리지(join) 않습니다. 
+    // 여기서 기다리면 카메라 루프가 멈춰버려 libcamerasrcAssertion 오류가 발생합니다.
+    // 기존 스레드 자원을 해제하기 위해 joinable 체크 후 적절히 처리하거나, 
+    // 여기서는 간단히 개별 스레드를 분리(detach)하여 비동기로 처리합니다.
     if (transmit_thread_.joinable()) {
-      transmit_thread_.join();
+      transmit_thread_.detach(); // 기존 스레드가 있다면 분리 (자체 종료 유도)
     }
 
-    // 전송 스레드 시작
-    transmit_thread_ = std::thread(&EventRecorder::recordingWorker, this,
-                                   std::move(pre_to_send),
-                                   std::move(post_to_send), current_track_id_);
+    transmit_thread_ = std::thread([this, pre_to_send, post_to_send, track_id]() {
+      this->recordingWorker(pre_to_send, post_to_send, track_id);
+    });
+
     return;
   }
 
-  // post-event 프레임 수집 (feedFrame은 이미 1 FPS로 호출되므로 매번 저장)
+  // post-event 프레임 수집
   {
-    std::lock_guard<std::mutex> lock(post_mutex_);
+    std::lock_guard<std::mutex> lock(state_mutex_);
     post_frames_.push_back(std::make_shared<cv::Mat>(frame.clone()));
   }
   post_count_++;
@@ -120,9 +131,8 @@ int EventRecorder::getPendingEventCount() const {
 
 void EventRecorder::recordingWorker(std::vector<FramePtr> pre,
                                     std::vector<FramePtr> post, int track_id) {
-  std::cout << "[EventRecorder] 전송 작업 시작 (Pre: " << pre.size()
-            << ", Post: " << post.size() << ", ID: " << track_id << ")"
-            << std::endl;
+  LOG_DEBUG(TAG, "전송 작업 시작 (Pre: " + std::to_string(pre.size()) + 
+                 ", Post: " + std::to_string(post.size()) + ", ID: " + std::to_string(track_id) + ")");
 
   // 전체 클립 병합
   std::vector<FramePtr> full_clip;
@@ -133,7 +143,7 @@ void EventRecorder::recordingWorker(std::vector<FramePtr> pre,
   // IStreamTransmitter에게 전송 위임
   transmitter_.transmit(full_clip, track_id);
 
-  std::cout << "[EventRecorder] ID " << track_id << " 전송 완료." << std::endl;
+  LOG_INFO(TAG, "ID " + std::to_string(track_id) + " 전송 완료.");
 
   // 전송 완료 후 큐에 대기 중인 다음 이벤트 처리
   processNextEvent();
@@ -149,8 +159,8 @@ void EventRecorder::processNextEvent() {
   PendingEvent next = std::move(pending_events_.front());
   pending_events_.pop();
 
-  std::cout << "[EventRecorder] 대기 이벤트 처리 시작 (ID: " << next.track_id
-            << ", 남은 대기: " << pending_events_.size() << "건)" << std::endl;
+  LOG_DEBUG(TAG, "대기 이벤트 처리 시작 (ID: " + std::to_string(next.track_id) + 
+                 ", 남은 대기: " + std::to_string(pending_events_.size()) + "건)");
 
   // 즉시 녹화 시작 (pre-event는 트리거 시점에 이미 확보됨)
   startRecording(next.track_id, std::move(next.pre_frames));

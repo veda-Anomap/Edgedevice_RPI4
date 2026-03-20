@@ -1,11 +1,14 @@
 #include "CommandServer.h"
 #include "../../config/AppConfig.h"
+#include "../util/Logger.h"
 
 #include <iostream>
 #include <cstring>
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+
+static const std::string TAG = "CommandServer";
 
 CommandServer::CommandServer() {}
 
@@ -39,7 +42,7 @@ void CommandServer::stop() {
 
     if (command_thread_.joinable()) command_thread_.join();
 
-    std::cout << "[CommandServer] 정지 완료." << std::endl;
+    LOG_INFO(TAG, "정지 완료.");
 }
 
 void CommandServer::setConnectionCallback(ConnectionCallback cb) {
@@ -79,8 +82,7 @@ void CommandServer::commandLoop() {
         return;
     }
 
-    std::cout << "[CommandServer] TCP 대기 중, 포트: "
-              << AppConfig::TCP_LISTEN_PORT << std::endl;
+    LOG_INFO(TAG, "TCP 대기 중, 포트: " + std::to_string(AppConfig::TCP_LISTEN_PORT));
 
     while (is_running_) {
         // 클라이언트 접속 대기 (Blocking)
@@ -94,7 +96,7 @@ void CommandServer::commandLoop() {
 
         // 접속 성공 → 연결 콜백 알림
         client_socket_fd_ = new_socket;
-        std::cout << "[CommandServer] 서버 연결됨!" << std::endl;
+        LOG_INFO(TAG, "서버 연결됨!");
 
         if (on_connection_changed_) {
             on_connection_changed_(true, new_socket);
@@ -115,10 +117,8 @@ void CommandServer::commandLoop() {
                 // CASE A: 기존 텍스트 방식 (CommandServer_before 로직)
                 memset(buffer, 0, sizeof(buffer));
                 ssize_t valread = read(new_socket, buffer, sizeof(buffer) - 1);
-                if (valread <= 0) break;
-
                 std::string cmd(buffer);
-                std::cout << "[CommandServer] 수신: " << cmd << std::endl; // 기존 로그 형식 유지
+                LOG_DEBUG(TAG, "수신: " + cmd);
 
                 if (cmd.find("START_STREAM:") != std::string::npos) {
                     try {
@@ -129,7 +129,7 @@ void CommandServer::commandLoop() {
                             on_command_received_(server_ip, port, cmd);
                         }
                     } catch (...) {
-                        std::cerr << "[CommandServer] 포트 파싱 실패" << std::endl;
+                        LOG_ERROR(TAG, "포트 파싱 실패");
                     }
                 }
             } 
@@ -146,7 +146,7 @@ void CommandServer::commandLoop() {
                 }
 
                 if (h_read < 0) {
-                    std::cout << "[CommandServer] 연결 끊김 (헤더 수신 중)" << std::endl;
+                    LOG_ERROR(TAG, "연결 끊김 (헤더 수신 중)");
                     break;
                 }
 
@@ -156,7 +156,7 @@ void CommandServer::commandLoop() {
                 uint32_t body_len = ntohl(body_len_be);
 
                 if (body_len > 10 * 1024 * 1024) { // 10MB 초과 시 방어적 종료
-                    std::cerr << "[CommandServer] 패킷 크기 초과: " << body_len << std::endl;
+                    LOG_ERROR(TAG, "패킷 크기 초과: " + std::to_string(body_len));
                     break;
                 }
 
@@ -174,10 +174,10 @@ void CommandServer::commandLoop() {
                 }
 
               // 3. 수신 데이터 처리 (로그 출력 및 모든 데이터를 Controller로 전달)
-                std::cout << "[CommandServer] 바이너리 수신 Type: " << (int)type << ", Len: " << body_len << std::endl;
+                LOG_DEBUG(TAG, "바이너리 수신 Type: " + std::to_string((int)type) + ", Len: " + std::to_string(body_len));
                 
                 if (body_len > 0) {
-                    std::cout << "[CommandServer] 수신: " << body << std::endl;
+                    LOG_DEBUG(TAG, "수신: " + body);
                 }
 
                 // [수정 핵심] 어떤 명령(모터 JSON 등)이든 일단 Controller로 넘깁니다.
@@ -206,6 +206,6 @@ void CommandServer::commandLoop() {
         }
         close(new_socket);
         client_socket_fd_ = -1;
-        std::cout << "[CommandServer] 클라이언트 연결 종료." << std::endl;
+        LOG_INFO(TAG, "클라이언트 연결 종료.");
     } // 메인 접속 대기 루프 종료
 }

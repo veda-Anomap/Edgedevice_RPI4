@@ -23,8 +23,13 @@ private:
 // 2. [방식 4] 2024 CVPR 기반 적응형 톤 매핑 (Zero-Shot Illumination)
 class ToneMappingEnhancer : public IImageEnhancer {
 public:
-  ToneMappingEnhancer() = default;
+  ToneMappingEnhancer(int radius = 16, float eps = 0.01f, float gamma_base = 0.5f);
   void enhance(const cv::Mat &src, cv::Mat &dst) override;
+
+private:
+  int radius_;
+  float eps_;
+  float gamma_base_;
 };
 
 // 3. [방식 5] 2025 ICCV 기반 가중치 다중 스케일 디테일 강화
@@ -60,6 +65,19 @@ class HybridEnhancer : public IImageEnhancer {
 public:
   HybridEnhancer() = default;
   void enhance(const cv::Mat &src, cv::Mat &dst) override;
+};
+
+// 8. [신규] AdaptiveHybridEnhancer (조도 기반 자동 전환)
+class AdaptiveHybridEnhancer : public IImageEnhancer {
+public:
+  AdaptiveHybridEnhancer();
+  void enhance(const cv::Mat &src, cv::Mat &dst) override;
+
+private:
+  int prev_level_ = 2; // Hysteresis용 이전 단계 저장
+  RetinexEnhancer retinex_;
+  ToneMappingEnhancer tone_map_;
+  DetailBoostEnhancer detail_boost_;
 };
 
 #endif // ADVANCED_ENHANCERS_H

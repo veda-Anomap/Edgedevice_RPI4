@@ -1,6 +1,12 @@
 cmake_minimum_required(VERSION 3.10)
 project(SubCameraApp)
 
+configure_file(
+    ${CMAKE_SOURCE_DIR}/yolo26n-pose_int8.tflite
+    ${CMAKE_BINARY_DIR}/yolo26n-pose_int8.tflite
+    COPYONLY
+)
+
 set(CMAKE_CXX_STANDARD 17)
 
 # -------------------------------

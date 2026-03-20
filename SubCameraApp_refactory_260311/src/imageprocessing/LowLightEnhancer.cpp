@@ -20,6 +20,8 @@ void LowLightEnhancer::precomputeLUTs() {
   }
 }
 
+#include <arm_neon.h>
+
 void LowLightEnhancer::enhance(const cv::Mat &src, cv::Mat &dst) {
   if (src.empty())
     return;

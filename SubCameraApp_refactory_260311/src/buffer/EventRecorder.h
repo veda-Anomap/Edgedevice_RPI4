@@ -66,7 +66,7 @@ private:
 
   // post-event 프레임 수집
   std::vector<FramePtr> post_frames_;
-  mutable std::mutex post_mutex_;
+  mutable std::mutex state_mutex_; // 모든 녹화 상태(pre/post/id)를 보호함
   std::atomic<int> post_count_{0};
 
   // [최적화] 중복 트리거 방지를 위한 트랙별 마지막 이벤트 시간 기록 (쿨다운)

@@ -69,7 +69,12 @@ void RetinexEnhancer::enhance(const cv::Mat &src, cv::Mat &dst) {
   // addWeighted(dst, 1.4, blurred, -0.4, 0, dst);
 }
 
+#include <arm_neon.h>
+
 // 2. [방식 4] 2024 CVPR 기반 적응형 톤 매핑
+ToneMappingEnhancer::ToneMappingEnhancer(int radius, float eps, float gamma_base)
+    : radius_(radius), eps_(eps), gamma_base_(gamma_base) {}
+
 void ToneMappingEnhancer::enhance(const cv::Mat &src, cv::Mat &dst) {
   if (src.empty())
     return;
@@ -82,23 +87,62 @@ void ToneMappingEnhancer::enhance(const cv::Mat &src, cv::Mat &dst) {
   v_channel.convertTo(v_channel, CV_32F, 1.0 / 255.0);
 
   Mat illumination;
-  ximgproc::guidedFilter(v_channel, v_channel, illumination, 16, 0.01);
+  ximgproc::guidedFilter(v_channel, v_channel, illumination, radius_, eps_);
 
   Scalar mean_val = mean(illumination);
-  float gamma = pow(0.5f, (0.5f - (float)mean_val[0]) / 0.5f);
+  float gamma = pow(gamma_base_, (0.5f - (float)mean_val[0]) / 0.5f);
   Mat lut_illumination;
   pow(illumination, gamma, lut_illumination);
 
+  dst.create(src.size(), src.type());
   vector<Mat> out_channels(3);
   for (int i = 0; i < 3; ++i) {
-    Mat c32;
-    channels[i].convertTo(c32, CV_32F, 1.0 / 255.0);
-    divide(c32, illumination + 0.001f, out_channels[i]);
-    multiply(out_channels[i], lut_illumination, out_channels[i]);
+    out_channels[i].create(src.size(), CV_8U);
+    
+    // [SIMD 최적화] NEON 연산 루프
+    const uint8_t* p_src = channels[i].data;
+    const float* p_illum = (float*)illumination.data;
+    const float* p_lut_illum = (float*)lut_illumination.data;
+    uint8_t* p_dst = out_channels[i].data;
+    int size = channels[i].total();
+
+    float32x4_t v_inv255 = vdupq_n_f32(1.0f / 255.0f);
+    float32x4_t v_eps = vdupq_n_f32(0.001f);
+    float32x4_t v_255 = vdupq_n_f32(255.0f);
+
+    int j = 0;
+    for (; j <= size - 4; j += 4) {
+        // Load 8-bit, convert to 32-bit float
+        uint8x8_t v8 = vld1_u8(p_src + j);
+        uint16x4_t v16 = vget_low_u16(vmovl_u8(v8));
+        uint32x4_t v32 = vmovl_u16(v16);
+        float32x4_t v_fp = vcvtq_f32_u32(v32);
+        v_fp = vmulq_f32(v_fp, v_inv255);
+
+        // Load Illum
+        float32x4_t v_i = vld1q_f32(p_illum + j);
+        float32x4_t v_li = vld1q_f32(p_lut_illum + j);
+
+        // Core Math: (c / (i + eps)) * li
+        float32x4_t v_res = vmulq_f32(v_fp, vdivq_f32(v_li, vaddq_f32(v_i, v_eps)));
+        
+        // Convert back to 8-bit
+        v_res = vmulq_f32(v_res, v_255);
+        uint32x4_t v_u32 = vcvtq_u32_f32(v_res);
+        
+        // 4픽셀 한꺼번에 스토어 (u32 -> u16 -> u8)
+        uint16x4_t v16_out = vmovn_u32(v_u32);
+        uint8x8_t v8_out = vmovn_u16(vcombine_u16(v16_out, v16_out));
+        vst1_lane_u32((uint32_t*)(p_dst + j), vreinterpret_u32_u8(v8_out), 0);
+    }
+    // Tail
+    for (; j < size; ++j) {
+        float c = p_src[j] / 255.0f;
+        p_dst[j] = saturate_cast<uchar>((c / (p_illum[j] + 0.001f)) * p_lut_illum[j] * 255.0f);
+    }
   }
 
   merge(out_channels, dst);
-  dst.convertTo(dst, CV_8U, 255.0);
 }
 
 // 3. [방식 5] 2025 ICCV 기반 카중치 다중 스케일 디테일 강화
@@ -198,4 +242,44 @@ void UltimateBalancedEnhancer::enhance(const cv::Mat &src, cv::Mat &dst) {
   enhanced_L.convertTo(lab_planes[0], CV_8U, 255.0);
   merge(lab_planes, lab);
   cvtColor(lab, dst, COLOR_Lab2BGR);
+}
+
+// 8. AdaptiveHybridEnhancer 구현
+AdaptiveHybridEnhancer::AdaptiveHybridEnhancer()
+    : tone_map_(16, 0.01f, 0.5f) {}
+
+void AdaptiveHybridEnhancer::enhance(const cv::Mat &src, cv::Mat &dst) {
+  if (src.empty()) return;
+
+  Scalar m = mean(src);
+  float avg = (float)(m[0] + m[1] + m[2]) / 3.0f;
+
+  /**
+   * [Hysteresis Logic]
+   * User Thresholds: Bright(>180), Normal(100~180), Dim(70~100), Extreme(<70)
+   */
+  int current_level = prev_level_;
+  if (avg > 185) current_level = 1;
+  else if (avg < 175 && avg > 105) current_level = 2;
+  else if (avg < 95 && avg > 75)   current_level = 3;
+  else if (avg < 65)                current_level = 4;
+
+  switch (current_level) {
+    case 1: // Bright (Bypass)
+      dst = src;
+      break;
+    case 2: // Normal (Retinex/CLAHE)
+      retinex_.enhance(src, dst);
+      break;
+    case 3: // Dim (NEON ToneMap)
+      tone_map_.enhance(src, dst);
+      break;
+    case 4: // Extreme (ToneMap + DetailBoost)
+      tone_map_.enhance(src, dst);
+      detail_boost_.enhance(dst, dst);
+      break;
+    default:
+      dst = src;
+  }
+  prev_level_ = current_level;
 }

@@ -16,11 +16,15 @@
 #include "../transmitter/ChunkedStreamTransmitter.h"
 #include "../edge_device/EdgeBridgeModule.h"
 
+#include "../util/Logger.h" // Added for LOG_* macros
 #include <nlohmann/json.hpp>
 #include <thread>
+#include <string> // Required for std::to_string and TAG
+
+static const std::string TAG = "Controller"; // Define TAG for logging
 
 SubCamController::SubCamController() : is_running_(false) {
-  std::cout << "[Controller] 컴포넌트 초기화 중..." << std::endl;
+  LOG_INFO(TAG, "컴포넌트 초기화 중...");
 
   // 1. NetworkFacade 생성 (INetworkSender + ICommandReceiver 동시 구현)
   auto facade = std::make_unique<NetworkFacade>();
@@ -90,18 +94,17 @@ SubCamController::SubCamController() : is_running_(false) {
   edge_bridge_->setNetworkSender(sender_ptr_); // [DIP] 네트워크 송신기 주입
 
   if (!edge_bridge_->start()) {
-    std::cerr << "[Controller] EdgeBridge 시작 실패 (UART/설정 확인 필요). "
-              << "카메라 기능은 정상 동작합니다." << std::endl;
+    LOG_ERROR(TAG, "EdgeBridge 시작 실패 (UART/설정 확인 필요). 카메라 기능은 정상 동작합니다.");
   }
 
-  std::cout << "[Controller] 컴포넌트 초기화 완료 (Phase 2 + EdgeBridge 포함)." << std::endl;
+  LOG_INFO(TAG, "컴포넌트 초기화 완료 (Phase 2 + EdgeBridge 포함).");
 }
 
 SubCamController::~SubCamController() { stop(); }
 
 void SubCamController::run(std::atomic<bool> *stop_flag) {
   is_running_ = true;
-  std::cout << "[Controller] 시스템 시작됨. 서버 대기 중..." << std::endl;
+  LOG_INFO(TAG, "시스템 시작됨. 서버 대기 중...");
 
   // 네트워크 시작 (명령 수신 콜백 등록) - [DIP] 바디 인자 추가
   command_receiver_->start([this](const std::string &ip, int port, const std::string &body) {
@@ -115,7 +118,7 @@ void SubCamController::run(std::atomic<bool> *stop_flag) {
   // 메인 루프
   while (is_running_) {
     if (stop_flag && *stop_flag) {
-      std::cout << "[Controller] 종료 신호 감지!" << std::endl;
+      LOG_INFO(TAG, "종료 신호 감지!");
       break;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -128,7 +131,7 @@ void SubCamController::stop() {
   // 중복 호출되더라도 안전하게 각 컴포넌트의 stop()을 호출하고 스레드를 join함
   bool was_running = is_running_.exchange(false);
   
-  std::cout << "[Controller] 시스템 종료 절차 시작..." << std::endl;
+  LOG_INFO(TAG, "시스템 종료 절차 시작...");
 
   if (edge_bridge_)
     edge_bridge_->stop();
@@ -139,21 +142,21 @@ void SubCamController::stop() {
 
   // 모니터링 스레드가 살아있다면 확실히 join
   if (monitor_thread_.joinable()) {
-    std::cout << "[Controller] 모니터링 스레드 종료 대기 중..." << std::endl;
+    LOG_INFO(TAG, "모니터링 스레드 종료 대기 중...");
     monitor_thread_.join();
   }
 
-  std::cout << "[Controller] 모든 시스템 컴포넌트 정리 완료." << std::endl;
+  LOG_INFO(TAG, "모든 시스템 컴포넌트 정리 완료.");
 }
 
 void SubCamController::handleServerCommand(const std::string &server_ip,
                                            int udp_port,
                                            const std::string &body) {
-  std::cout << "\n========================================" << std::endl;
-  std::cout << "[Controller] 명령 수신!" << std::endl;
-  std::cout << " -> 발신지: " << server_ip << ":" << udp_port << std::endl;
-  std::cout << " -> 명령 내용: " << body << std::endl;
-  std::cout << "========================================" << std::endl;
+  LOG_INFO(TAG, "========================================");
+  LOG_INFO(TAG, "명령 수신!");
+  LOG_INFO(TAG, " -> 발신지: " + server_ip + ":" + std::to_string(udp_port));
+  LOG_INFO(TAG, " -> 명령 내용: " + body);
+  LOG_INFO(TAG, "========================================");
 
   // 1. 스트리밍 시작 명령 조건 (START_STREAM 등 문자열 포함 시)
   if (body.find("START_STREAM:") != std::string::npos) {
@@ -177,16 +180,18 @@ void SubCamController::handleServerCommand(const std::string &server_ip,
         }
 
         if (!motor_cmd.empty()) {
-          std::cout << "[Controller] STM32로 릴레이 시도: " << motor_cmd << std::endl;
+          LOG_INFO(TAG, "STM32로 릴레이 시도: " + motor_cmd);
           
           // 성공 여부 로그 추가
           bool res = edge_bridge_->handleMotorCmd(motor_cmd);
           if (!res) {
-            std::cerr << "[Controller] EdgeBridge 전달 실패 (bridge_ 객체 확인 필요)" << std::endl;
+            LOG_ERROR(TAG, "EdgeBridge 전달 실패 (bridge_ 객체 확인 필요)");
           } 
       }
     }
-    catch (...) {}
+    catch (...) {
+        LOG_ERROR(TAG, "JSON 파싱 중 오류 발생 또는 'motor'/'cmd' 키 없음.");
+    }
     } // if (edge_bridge_) 닫기
   } // if (body.find...) 닫기
 }

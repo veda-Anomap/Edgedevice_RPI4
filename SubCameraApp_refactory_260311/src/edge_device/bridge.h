@@ -33,11 +33,14 @@ struct BridgeConfig {
     // 1이면 안 모아서 즉시 전송, 5면 5개 모아서 전송
     int sensor_batch_size = 1;
 
+    // [CUSTOM-OPTIONAL] 모터 제어 명령 재시도 횟수 (기본 1회 = 총 2회 시도)
+    int motor_retries = 1;
+
     // [CUSTOM-OPTIONAL] 운영 환경에 맞는 로그 경로로 변경 가능
     std::string log_file = "./stm_bridge.log";
 };
 
-class Logger {
+class BridgeLogger {
 public:
     bool open(const std::string& path);
     void log(const std::string& level, const std::string& msg);
@@ -68,7 +71,7 @@ private:
 
     BridgeConfig cfg_;
     UartPort uart_;
-    Logger logger_;
+    BridgeLogger logger_;
     INetworkSender* sender_ = nullptr;
 
     // [신규] 비동기 UART 처리를 위한 단일 스레드 구조

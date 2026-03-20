@@ -28,7 +28,7 @@ constexpr int FRAME_HEIGHT = 480;
 constexpr int CAPTURE_WIDTH = 1920;
 constexpr int CAPTURE_HEIGHT = 1080;
 constexpr int FPS_TARGET = 30;
-constexpr int BITRATE = 4000;
+constexpr int BITRATE = 2000000;
 
 // --- AI 모델 설정 ---
 constexpr int MODEL_INPUT_SIZE = 640;
@@ -82,6 +82,10 @@ constexpr int EVENT_CLIP_PORT_OFFSET = 1;  // 이벤트 클립 전송 포트 오
 // --- [Stability] 자원 보호 설정 ---
 constexpr int EVENT_RECORDER_MAX_PENDING = 5; // 대기 큐 최대 건수 (메모리 보호)
 constexpr int EVENT_COOLDOWN_SEC = 10; // 동일 객체 낙상 재감지 쿨다운 (초)
+constexpr bool ENABLE_DEBUG_LOG = true; // 디버그 로그 활성화 여부
+constexpr bool ENABLE_LOG_PERF_PRE = true; // 전처리 성능 로그
+constexpr bool ENABLE_LOG_PERF_AI = true;  // AI 추론 성능 로그
+constexpr bool ENABLE_LOG_FPS = true;     // FPS(Capture/Processing) 로그
 
 } // namespace AppConfig
 
