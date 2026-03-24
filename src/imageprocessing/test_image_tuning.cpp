@@ -6,6 +6,10 @@
 #include <opencv2/ximgproc.hpp>
 #include <string>
 #include <vector>
+#include <algorithm>
+
+#include "AdvancedEnhancers.h"
+#include "LowLightEnhancer.h"
 
 using namespace cv;
 using namespace std;
@@ -86,26 +90,31 @@ public:
     exp(-(g_orig / (g_reblur + 0.001)), focus_map);
     blur(focus_map, focus_map, Size(15, 15));
 
+    // [개선 1] Fully Auto-Parameterization (완전자동 파라미터 제어)
+    // 픽셀 전체의 흐림 지도(focus_map) 평균을 구하여 절대적 블러 수치 파악
+    Scalar mean_blur = mean(focus_map);
+    
+    // 수동 트랙바(strength)를 무시하고 블러가 심할수록 스스로 샤프닝 강도를 높이는 자율주행 공식
+    float auto_strength = (float)mean_blur[0] * 8.0f; 
+
     Mat laplacian, result;
     Laplacian(src, laplacian, CV_16S, 3);
-    // convertScaleAbs는 음수(Laplacian 디테일의 윤곽선 한쪽)를 양수로 덮어버려 정상적인 샤프닝이 불가능하므로 제거
 
     src.copyTo(result);
     for (int y = 0; y < src.rows; y++) {
       for (int x = 0; x < src.cols; x++) {
         float weight = focus_map.at<float>(y, x);
         for (int c = 0; c < 3; c++) {
-          // 샤프닝 공식 복구 (원본 - 라플라시안)
           result.at<Vec3b>(y, x)[c] = saturate_cast<uchar>(
               src.at<Vec3b>(y, x)[c] -
-              (laplacian.at<Vec3s>(y, x)[c] * weight * strength));
+              (laplacian.at<Vec3s>(y, x)[c] * weight * auto_strength));
         }
       }
     }
     return result;
   }
-  string getName() const override { return "Gradient Ratio DFD"; }
-  string getBrief() const override { return "Spatially-variant Blur Map"; }
+  string getName() const override { return "Gradient Ratio (Auto)"; }
+  string getBrief() const override { return "Fully Auto Strength via Blur Map"; }
 };
 
 // ==========================================
@@ -115,12 +124,12 @@ public:
 class DigitalELPStrategy : public IFocusStrategy {
 private:
   Mat last_gray;
-  double prev_elp = 0;
 
 public:
   Mat apply(const Mat &src, float strength) override {
     Mat gray, laplacian, result = src.clone();
     cvtColor(src, gray, COLOR_BGR2GRAY);
+    GaussianBlur(gray, gray, Size(3, 3), 0.5);
     gray.convertTo(gray, CV_32F);
 
     if (last_gray.empty()) {
@@ -128,44 +137,40 @@ public:
       return result;
     }
 
-    // 공간 Laplacian 정보와 시간적 Polarity(Event) 곱 산출
     Laplacian(gray, laplacian, CV_32F, 3);
-    Mat diff = gray - last_gray;
+    
+    // [개선 2] 고정 초점 카메라를 위한 ELP 기반 "이벤트 모션 타겟 디블러링"
+    // 모터가 없는 렌즈에서 시간차(diff)는 곧 '움직이는 물체(블러 잔상)'를 뜻함.
+    // 이를 역이용해 움직이는 객체에만 이벤트 가중치를 주어 핀포인트 모션 샤프닝을 수행!
+    Mat diff;
+    absdiff(gray, last_gray, diff);
+    
+    Mat event_weight;
+    // 노이즈(배경)는 죽이고 큰 움직임(이벤트)만 통과시킴
+    threshold(diff, event_weight, 5.0, 1.0, THRESH_TOZERO);
+    event_weight = event_weight / 20.0f; 
+    blur(event_weight, event_weight, Size(9, 9));
 
-    double elp_score = 0;
-    Rect roi(src.cols / 2 - 100, src.rows / 2 - 100, 200,
-             200); // RPi 최적화를 위한 ROI
-
-    for (int y = roi.y; y < roi.y + roi.height; y++) {
-      for (int x = roi.x; x < roi.x + roi.width; x++) {
-        float d = diff.at<float>(y, x);
-        if (std::abs(d) > 3.0f) { // 이벤트 생성 임계값
-          float p = (d > 0) ? 1.0f : -1.0f;
-          elp_score += (p * laplacian.at<float>(y, x));
+    // 최적화를 위해 BGR 3채널에 단일 Grayscale 라플라시안 스칼라 연산 적용
+    for (int y = 0; y < src.rows; y++) {
+      for (int x = 0; x < src.cols; x++) {
+        float w = std::min(1.0f, event_weight.at<float>(y, x));
+        
+        // 피사체가 움직이는 곳(w > 0)에만 극강의 ELP 샤프닝을 걸어 잔상(Motion Blur) 억제
+        if (w > 0.05f) {
+            for (int c = 0; c < 3; c++) {
+              float orig = src.at<Vec3b>(y, x)[c];
+              result.at<Vec3b>(y, x)[c] = saturate_cast<uchar>(orig - (laplacian.at<float>(y, x) * w * strength * 2.0f));
+            }
         }
       }
     }
 
-    // 부호 변이(Sign Mutation) 감지: Peak에서 Positive -> Negative
-    string msg = "ELP Seeking...";
-    Scalar color(0, 255, 255);
-    if (prev_elp > 0 && elp_score <= 0) {
-      msg = "IN FOCUS (PEAK)!";
-      color = Scalar(0, 255, 0);
-    } else if (elp_score < 0) {
-      msg = "OUT (Passed)";
-      color = Scalar(0, 0, 255);
-    }
-
-    rectangle(result, roi, color, 2);
-    putText(result, msg, Point(10, 30), FONT_HERSHEY_SIMPLEX, 0.7, color, 2);
-
     last_gray = gray.clone();
-    prev_elp = elp_score;
     return result;
   }
-  string getName() const override { return "ELP AF Guide"; }
-  string getBrief() const override { return "CVPR 2025: Sign Mutation"; }
+  string getName() const override { return "ELP Motion Deblur"; }
+  string getBrief() const override { return "CVPR 2025: Event-Guided Sharpening"; }
 };
 
 // ==========================================
@@ -184,8 +189,9 @@ int main(int argc, char **argv) {
   if (input_val == "cam") {
       // 1. 라즈베리 파이 GStreamer 메모리 할당 제한 에러(v4l2src0) 수정
       // V4L2 대신 최상위 libcamerasrc 엔진 사용으로 하드웨어 충돌 방지
+      // 카메라 180도 회전(videoflip) 추가
       string capture_pipeline = "libcamerasrc ! video/x-raw, width=640, height=480, framerate=30/1 ! "
-                                "videoconvert ! video/x-raw, format=BGR ! appsink drop=true sync=false";
+                                "videoconvert ! videoflip method=rotate-180 ! video/x-raw, format=BGR ! appsink drop=true sync=false";
       cap.open(capture_pipeline, CAP_GSTREAMER);
       
       // 만약 권한 거부 시 안전한 fallback
@@ -203,50 +209,148 @@ int main(int argc, char **argv) {
   }
 
   namedWindow("Focus Comparison System", WINDOW_NORMAL);
+  resizeWindow("Focus Comparison System", 1280, 560);
   
-  // 2. Trackbar Deprecated 경고 해결 (Value Pointer 대신 NULL + getTrackbarPos 사용)
+  // ==========================================
+  // 통합 트랙바 렌더링
+  // ==========================================
+  createTrackbar("Tone Mode (0:M, 1:A)", "Focus Comparison System", NULL, 1, onTrackbar);
+  setTrackbarPos("Tone Mode (0:M, 1:A)", "Focus Comparison System", 1);
+  createTrackbar("STM32 Lux", "Focus Comparison System", NULL, 255, onTrackbar);
+  setTrackbarPos("STM32 Lux", "Focus Comparison System", 150);
+  createTrackbar("Tone Gamma", "Focus Comparison System", NULL, 100, onTrackbar);
+  setTrackbarPos("Tone Gamma", "Focus Comparison System", 50);
+
   createTrackbar("Strategy(G|R|E)", "Focus Comparison System", NULL, 2, onTrackbar);
   setTrackbarPos("Strategy(G|R|E)", "Focus Comparison System", 0);
-  
-  createTrackbar("Strength(x0.1)", "Focus Comparison System", NULL, 50, onTrackbar);
-  setTrackbarPos("Strength(x0.1)", "Focus Comparison System", 20);
+  createTrackbar("Sharp Strength", "Focus Comparison System", NULL, 50, onTrackbar);
+  setTrackbarPos("Sharp Strength", "Focus Comparison System", 20);
 
+  // 알고리즘 객체 생성
   vector<unique_ptr<IFocusStrategy>> strategies;
   strategies.push_back(make_unique<GuidedSharpeningStrategy>());
   strategies.push_back(make_unique<GradientRatioStrategy>());
   strategies.push_back(make_unique<DigitalELPStrategy>());
+  
+  LowLightEnhancer lowLightEnhancer;
+
+  bool is_recording = false;
+  VideoWriter recorder;
+
+  cout << "\n======================================================\n";
+  cout << "[단축키 안내]\n";
+  cout << " 'R' 키 : 현재 화면 녹화(비디오 저장) 시작/종료\n";
+  cout << " 'C' 또는 'P' 키 : 현재 화면 사진(이미지) 캡쳐 및 저장\n";
+  cout << " 'Q' 키 : 프로그램 종료\n";
+  cout << "======================================================\n\n";
 
   Mat frame, output, display;
   while (cap.read(frame)) {
-    // 트랙바 안전 조회
+    // 트랙바 안전 조회 (동적 파라미터)
+    int t_mode = getTrackbarPos("Tone Mode (0:M, 1:A)", "Focus Comparison System");
+    int t_lux = getTrackbarPos("STM32 Lux", "Focus Comparison System");
+    int t_gamma = getTrackbarPos("Tone Gamma", "Focus Comparison System");
     int g_strategy_idx = getTrackbarPos("Strategy(G|R|E)", "Focus Comparison System");
-    int g_sharp_strength = getTrackbarPos("Strength(x0.1)", "Focus Comparison System");
+    int g_sharp_strength = getTrackbarPos("Sharp Strength", "Focus Comparison System");
 
-    // [에러 수정 완료] cv::Scalar 전체 객체(m) 대신 각 채널의 배열 인덱스(m[0], m[1], m[2])를 접근해야 합니다.
+    // ==========================================
+    // 1. 조도 기반 톤매핑(Toneup) 필터 파이프라인
+    // ==========================================
+    Mat enhanced;
     Scalar m = mean(frame);
     float cam_lux = (float)(m[0] + m[1] + m[2]) / 3.0f;
+    float current_gamma = 0.5f;
 
-    // 선택된 전략 실행 (LSP 준수)
+    if (t_mode == 0) {
+        current_gamma = std::max(0.01f, (float)t_gamma * 0.01f);
+        ToneMappingEnhancer manualTone(16, 0.01f, current_gamma);
+        manualTone.enhance(frame, enhanced);
+    } else {
+        if (t_lux < 30 && cam_lux < 50.0f) {
+            lowLightEnhancer.enhance(frame, enhanced);
+            current_gamma = -1.0f; // 극한 저조도 (LUT+CLAHE)
+        } else {
+            if (cam_lux >= 180.0f) current_gamma = 0.95f; 
+            else if (cam_lux <= 50.0f) current_gamma = 0.25f; 
+            else current_gamma = 0.25f + ((cam_lux - 50.0f) / 130.0f) * 0.70f;
+            
+            int adaptive_radius = (cam_lux < 100.0f) ? 24 : 16; 
+            ToneMappingEnhancer dynamicTone(adaptive_radius, 0.01f, current_gamma);
+            dynamicTone.enhance(frame, enhanced);
+        }
+    }
+
+    // ==========================================
+    // 2. 포커스(샤프닝) 전략 적용
+    // (이전과 달리 원본이 아니라 밝아진 enhanced 프레임에 적용)
+    // ==========================================
     float cur_strength = g_sharp_strength * 0.1f;
-    output = strategies[g_strategy_idx]->apply(frame, cur_strength);
+    output = strategies[g_strategy_idx]->apply(enhanced, cur_strength);
 
-    // 결과 화면 구성 (원본 | 결과)
+    // ==========================================
+    // 3. 수치적 초점 평가 스코어 추출 (Variance of Laplacian)
+    // ==========================================
+    Mat gray, lap;
+    cvtColor(output, gray, COLOR_BGR2GRAY);
+    Laplacian(gray, lap, CV_32F);
+    Scalar mean_L, stddev_L;
+    meanStdDev(lap, mean_L, stddev_L);
+    double focus_score = stddev_L[0] * stddev_L[0];
+
+    // ==========================================
+    // 4. GUI & 렌더링 구성
+    // ==========================================
     Mat f_res, o_res;
     resize(frame, f_res, Size(640, 480));
     resize(output, o_res, Size(640, 480));
     hconcat(f_res, o_res, display);
 
-    // 오버레이 정보 라벨링
-    string info = strategies[g_strategy_idx]->getName() + " : " +
-                  strategies[g_strategy_idx]->getBrief();
-    putText(display, "ORIGINAL", Point(20, 460), FONT_HERSHEY_SIMPLEX, 0.7,
-            Scalar(255, 255, 255), 2);
-    putText(display, info, Point(660, 460), FONT_HERSHEY_SIMPLEX, 0.7,
-            Scalar(0, 255, 0), 2);
+    // 오버레이 정보 라벨링 (왼쪽: 톤매핑 정보, 오른쪽: 포커스 정보)
+    string t_info = (t_mode == 0) ? format("[Manual Tone] Gamma: %.2f", current_gamma) 
+                                  : format("[Auto Tone] Gamma: %.2f | Cam: %d, STM: %d", current_gamma, (int)cam_lux, t_lux);
+    
+    string f_info = strategies[g_strategy_idx]->getName();
+    string score_info = format("Focus Score: %.1f", focus_score);
+
+    putText(display, t_info, Point(20, 30), FONT_HERSHEY_SIMPLEX, 0.7, Scalar(0, 255, 0), 2);
+    putText(display, f_info, Point(660, 30), FONT_HERSHEY_SIMPLEX, 0.7, Scalar(0, 255, 0), 2);
+    
+    // 포커스 점수 메트릭 추가
+    putText(display, score_info, Point(660, 60), FONT_HERSHEY_SIMPLEX, 0.7, Scalar(0, 255, 255), 2);
+
+    if (is_recording && recorder.isOpened()) {
+        putText(display, "REC O", Point(1150, 40), FONT_HERSHEY_SIMPLEX, 1.0, Scalar(0, 0, 255), 3);
+        recorder.write(display);
+    }
 
     imshow("Focus Comparison System", display);
-    if (waitKey(30) == 'q')
+    
+    // ==========================================
+    // 5. 키보드 입력 및 녹화 로직 제어
+    // ==========================================
+    char key = (char)waitKey(30);
+    if (key == 'q' || key == 'Q' || key == 27) {
       break;
+    } else if (key == 'r' || key == 'R') {
+      if (is_recording) {
+        is_recording = false;
+        recorder.release();
+        cout << "\n[알림] 영상 녹화(저장)가 완료되었습니다.\n";
+      } else {
+        string filename = "tuning_record_" + to_string(time(nullptr)) + ".mp4";
+        recorder.open(filename, VideoWriter::fourcc('m', 'p', '4', 'v'), 30.0, Size(1280, 480));
+        if (recorder.isOpened()) {
+          is_recording = true;
+          cout << "\n[알림] 화면 비디오 녹화를 시작합니다 -> " << filename << "\n";
+        } else {
+          cerr << "\n[에러] 녹화 파일 스트림을 열지 못했습니다!\n";
+        }
+      }
+    } else if (key == 'c' || key == 'C' || key == 'p' || key == 'P') {
+      string filename = "photo_capture_" + to_string(time(nullptr)) + ".jpg";
+      imwrite(filename, display);
+      cout << "\n[찰칵] 1280x480 화면 전체 사진 캡쳐 완료 -> " << filename << "\n";
+    }
   }
   return 0;
 }
