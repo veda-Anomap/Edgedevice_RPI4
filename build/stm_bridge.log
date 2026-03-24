@@ -1,0 +1,3 @@
+2026-03-20 15:26:18 [INFO] uart opened: /dev/serial0
+2026-03-20 15:26:18 [INFO] UART processing thread started (Queue-based, Batch size: 1)
+2026-03-20 15:26:42 [INFO] bridge stopped
