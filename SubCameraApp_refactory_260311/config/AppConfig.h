@@ -39,11 +39,23 @@ constexpr float CONFIDENCE_THRESHOLD = 0.5f;
 constexpr int MAX_DETECTIONS = 100;
 constexpr int DETECTION_STRIDE = 57; // 모델 출력 stride (per detection)
 constexpr int NUM_KEYPOINTS = 17;
+
+// --- AI 모델 출력 인덱스 (Magic Number 제거) ---
+constexpr int IDX_X1 = 0;
+constexpr int IDX_Y1 = 1;
+constexpr int IDX_X2 = 2;
+constexpr int IDX_Y2 = 3;
+constexpr int IDX_CONF = 4;
+constexpr int IDX_KPT_START = 6;
+
 constexpr int AI_INFERENCE_INTERVAL =
     5; // N프레임당 1번만 AI 연산 (CPU 부하 조절용, 기본 3)
 
 // --- 낙상 감지 임계값 ---
-constexpr float FALL_VELOCITY_THRESHOLD = 18.0f;
+constexpr float FALL_VELOCITY_THRESHOLD = 18.0f;     // 레거시 (절대 좌표 기반)
+constexpr float FALL_NORM_VELOCITY_THRESH = 1.2f;   // 고도화 (몸통 길이 기반 정규화 속도)
+constexpr float STILLNESS_THRESH_SEC = 1.5f;        // 낙상 후 정지 상태 확인 시간 (초)
+constexpr float GROUND_ZONE_RATIO = 0.8f;           // 지면 영역 (프레임 하단부 비율)
 constexpr float SIDE_FALL_ASPECT_RATIO = 0.9f;
 constexpr float SIDE_FALL_ANGLE = 45.0f;
 constexpr float FRONTAL_FALL_COMPRESSION = 0.45f;
@@ -55,7 +67,7 @@ constexpr int VOTE_THRESHOLD = 2;
 constexpr int CY_HISTORY_SIZE = 10;
 
 // --- 트래커 설정 ---
-constexpr float TRACKER_MAX_DISTANCE = 50.0f;
+constexpr float TRACKER_MAX_DISTANCE = 250.0f; // 1 FPS 환경 대응 (50.0f -> 250.0f)
 
 // --- 스켈레톤 연결 쌍 (COCO 17 keypoints) ---
 inline const std::vector<std::pair<int, int>> KPT_SKELETON = {
@@ -86,6 +98,7 @@ constexpr bool ENABLE_DEBUG_LOG = true; // 디버그 로그 활성화 여부
 constexpr bool ENABLE_LOG_PERF_PRE = true; // 전처리 성능 로그
 constexpr bool ENABLE_LOG_PERF_AI = true;  // AI 추론 성능 로그
 constexpr bool ENABLE_LOG_FPS = true;     // FPS(Capture/Processing) 로그
+constexpr bool ENABLE_LOG_CAM_DIAG = true; // 카메라 진단 (연속 실패 감지) 로그
 
 } // namespace AppConfig
 

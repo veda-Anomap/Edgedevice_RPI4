@@ -9,6 +9,8 @@
 // 다른 캡처 방식으로 교체 가능
 // =============================================
 
+#include <memory> 
+
 class GStreamerCamera : public ICamera {
 public:
   GStreamerCamera() = default;
@@ -20,7 +22,7 @@ public:
   bool isOpened() const override;
 
 private:
-  cv::VideoCapture cap_;
+  std::unique_ptr<cv::VideoCapture> cap_;
 };
 
 #endif // GSTREAMER_CAMERA_H

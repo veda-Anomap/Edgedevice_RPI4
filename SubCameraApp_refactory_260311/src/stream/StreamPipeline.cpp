@@ -45,32 +45,8 @@ void StreamPipeline::startStreaming(const std::string &target_ip,
   LOG_INFO(TAG,
            "AI 스트림 시작: " + target_ip + ":" + std::to_string(target_port));
 
-  // 카메라 파이프라인 구성 (RPi 4B 하드웨어 가속 최적화)
-  // - libcamerasrc: Raspberry Pi 전용 최신 카메라 소스
-  // - v4l2convert: ISP/VPU 하드웨어 스케일러 활용 (CPU 부하 대폭 감소)
-  //
-  // [핵심] 모든 queue에 leaky=downstream + max-size-buffers를 설정하여
-  // 하류 요소(v4l2convert, videoflip, videoconvert) 지연 시 버퍼가
-  // 무한 누적되어 libcamerasrc의 RequestWrap 풀을 고갈시키는 것을 방지.
-  // 총 파이프라인 내 최대 버퍼 수: queue1(2) + queue2(2) + appsink(1) = 5
-  std::string capture_pipeline =
-      "libcamerasrc ! "
-      "video/x-raw, width=" +
-      std::to_string(AppConfig::CAPTURE_WIDTH) +
-      ", height=" + std::to_string(AppConfig::CAPTURE_HEIGHT) +
-      " ! "
-      "queue max-size-buffers=2 leaky=downstream ! " // [수정] leaky 정책 추가
-      "v4l2convert ! "
-      "video/x-raw, width=" +
-      std::to_string(AppConfig::FRAME_WIDTH) +
-      ", height=" + std::to_string(AppConfig::FRAME_HEIGHT) +
-      " ! "
-      "videoflip method=rotate-180 ! "
-      "queue max-size-buffers=2 leaky=downstream ! " // [추가] CPU-bound 요소
-                                                     // 격리
-      "videoconvert ! " // BGR 변환을 위한 필수 단계 (Negotiation 에러 방지)
-      "video/x-raw, format=BGR ! "
-      "appsink drop=true max-buffers=1 sync=false";
+  // 카메라 파이프라인 구성 (리팩토링 완료)
+  std::string capture_pipeline = getCapturePipelineDesc();
 
   LOG_INFO(TAG, "카메라 파이프라인 초기화: " + capture_pipeline);
   if (!camera_.open(capture_pipeline)) {
@@ -81,23 +57,13 @@ void StreamPipeline::startStreaming(const std::string &target_ip,
     return;
   }
 
-  // [DIP 최격화] 전송 지연이 캡처 루프를 막지 않도록 queue 추가 및 x264enc
-  // zerolatency 설정
-  std::string send_pipeline =
-      "appsrc is-live=true format=time do-timestamp=true ! "
-      "video/x-raw, format=BGR, width=" +
-      std::to_string(AppConfig::FRAME_WIDTH) +
-      ", height=" + std::to_string(AppConfig::FRAME_HEIGHT) +
-      ", framerate=" + std::to_string(AppConfig::FPS_TARGET) +
-      "/1 ! "
-      "queue max-size-buffers=3 leaky=downstream ! "
-      "videoconvert ! video/x-raw, format=I420 ! "
-      "x264enc tune=zerolatency bitrate=" +
-      std::to_string(AppConfig::BITRATE) +
-      " speed-preset=ultrafast ! rtph264pay config-interval=1 !"
-      "udpsink host=" +
-      target_ip + " port=" + std::to_string(target_port) +
-      " sync=false async=false";
+  // 네트워크 송출 파이프라인 구성 (리팩토링 완료)
+  std::string send_pipeline = getSendPipelineDesc(target_ip, target_port);
+
+  LOG_INFO(TAG, "네트워크 송출 파이프라인 초기화: " + send_pipeline);
+  network_writer_.open(
+      send_pipeline, cv::CAP_GSTREAMER, 0, AppConfig::FPS_TARGET,
+      cv::Size(AppConfig::FRAME_WIDTH, AppConfig::FRAME_HEIGHT));
 
   LOG_INFO(TAG, "네트워크 송출 파이프라인 초기화: " + send_pipeline);
   network_writer_.open(
@@ -332,10 +298,10 @@ void StreamPipeline::processingLoop() {
       event_recorder_.feedFrame(frame);
     }
 
-    // 3. AI 추론 전달 (사용자 요청: 1초당 1회 수준으로 최적화)
-    // [보호] AI가 정상 초기화된 경우에만 큐에 삽입
+    // 3. AI 추론 전달 (사용자 요청: 부하 조절용 인터벌 적용)
+    // [중요] FPS_TARGET % 2 == 0 이면 0으로 나누기 오류가 발생하므로 AI_INFERENCE_INTERVAL 사용
     static int ai_feed_counter = 0;
-    if (is_detector_ready_ && ++ai_feed_counter % AppConfig::FPS_TARGET == 0) {
+    if (is_detector_ready_ && ++ai_feed_counter % AppConfig::AI_INFERENCE_INTERVAL == 0) {
       frame_queue_.push(frame.clone());
     }
 
@@ -375,6 +341,8 @@ void StreamPipeline::processingLoop() {
 // 효과: libcamerasrc RequestWrap 버퍼 풀 고갈 방지 (3시간+ 안정성)
 // ================================================================
 void StreamPipeline::cameraLoop() {
+  int consecutive_failures = 0; // [진단] 연속 read 실패 카운터
+
   while (is_streaming_) {
     cv::Mat raw_frame; // [핵심] 지역변수 → 루프 끝에서 자동 소멸
     auto read_start = std::chrono::steady_clock::now();
@@ -392,8 +360,42 @@ void StreamPipeline::cameraLoop() {
     if (!read_success || raw_frame.empty()) {
       if (!is_streaming_)
         break;
+
+      consecutive_failures++;
+
+      // [진단] 연속 실패 시 단계별 경고
+      if (consecutive_failures == 30) { // ~1초
+        LOG_WARN("CAM_DIAG", "카메라 프레임 수신 불가 (연속 " +
+                                 std::to_string(consecutive_failures) +
+                                 "회 실패). 카메라 상태를 확인하세요.");
+      } else if (consecutive_failures == 300) { // ~10초
+        LOG_ERROR("CAM_DIAG", "⚠️ 카메라 장기 미응답 (연속 " +
+                                  std::to_string(consecutive_failures) +
+                                  "회 실패). 가능한 원인:");
+        LOG_ERROR(
+            "CAM_DIAG",
+            "  1. 이전 프로세스가 카메라 점유 중 → sudo pkill -f SubCameraApp");
+        LOG_ERROR("CAM_DIAG",
+                  "  2. libcamerasrc 장치 잠금 → sudo fuser -k /dev/video0");
+        LOG_ERROR("CAM_DIAG", "  3. 카메라 모듈 물리적 연결 불량");
+      } else if (consecutive_failures % 900 == 0) { // ~30초마다 반복 알림
+        LOG_ERROR("CAM_DIAG", "카메라 여전히 미응답 (" +
+                                  std::to_string(consecutive_failures / 30) +
+                                  "초 경과)");
+      }
+
       std::this_thread::sleep_for(std::chrono::milliseconds(10));
       continue;
+    }
+
+    // 프레임 수신 성공 → 카운터 리셋
+    if (consecutive_failures > 0) {
+      if (consecutive_failures >= 30) {
+        LOG_INFO("CAM_DIAG", "✅ 카메라 프레임 수신 복구됨 (" +
+                                 std::to_string(consecutive_failures) +
+                                 "회 실패 후)");
+      }
+      consecutive_failures = 0;
     }
 
     // [핵심] GStreamer 버퍼와 완전 분리된 독립 프레임 생성
@@ -437,4 +439,43 @@ void StreamPipeline::cameraLoop() {
 
 int StreamPipeline::getPendingEventCount() const {
   return event_recorder_.getPendingEventCount();
+}
+
+std::string StreamPipeline::getCapturePipelineDesc() const {
+  // 카메라 파이프라인 구성 (RPi 4B 하드웨어 가속 최적화)
+  // - libcamerasrc: Raspberry Pi 전용 최신 카메라 소스
+  // - v4l2convert: ISP/VPU 하드웨어 스케일러 활용 (CPU 부하 대폭 감소)
+  //
+  // [핵심] 모든 queue에 leaky=downstream + max-size-buffers를 설정하여
+  // 하류 요소(v4l2convert, videoflip, videoconvert) 지연 시 버퍼가
+  // 무한 누적되어 libcamerasrc의 RequestWrap 풀을 고갈시키는 것을 방지.
+  return "libcamerasrc ! "
+         "video/x-raw, width=" +
+         std::to_string(AppConfig::CAPTURE_WIDTH) + ", height=" + std::to_string(AppConfig::CAPTURE_HEIGHT) +
+         " ! "
+         "queue max-size-buffers=2 leaky=downstream ! "
+         "v4l2convert ! "
+         "video/x-raw, width=" +
+         std::to_string(AppConfig::FRAME_WIDTH) + ", height=" + std::to_string(AppConfig::FRAME_HEIGHT) +
+         " ! "
+         "videoflip method=rotate-180 ! "
+         "queue max-size-buffers=2 leaky=downstream ! "
+         "videoconvert ! "
+         "video/x-raw, format=BGR ! "
+         "appsink drop=true max-buffers=1 sync=false";
+}
+
+std::string StreamPipeline::getSendPipelineDesc(const std::string &target_ip, int target_port) const {
+  // [DIP 최적화] 전송 지연이 캡처 루프를 막지 않도록 queue 추가 및 x264enc zerolatency 설정
+  return "appsrc is-live=true format=time do-timestamp=true ! "
+         "video/x-raw, format=BGR, width=" +
+         std::to_string(AppConfig::FRAME_WIDTH) + ", height=" + std::to_string(AppConfig::FRAME_HEIGHT) +
+         ", framerate=" + std::to_string(AppConfig::FPS_TARGET) + "/1 ! "
+         "queue max-size-buffers=3 leaky=downstream ! "
+         "videoconvert ! video/x-raw, format=I420 ! "
+         "x264enc tune=zerolatency bitrate=" +
+         std::to_string(AppConfig::BITRATE) +
+         " speed-preset=ultrafast ! rtph264pay config-interval=1 !"
+         "udpsink host=" +
+         target_ip + " port=" + std::to_string(target_port) + " sync=false async=false";
 }

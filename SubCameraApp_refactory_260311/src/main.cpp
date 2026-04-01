@@ -1,4 +1,6 @@
 #include "controller/SubCamController.h"
+#include "util/ProcessGuard.h"
+#include "util/Logger.h"
 #include <atomic>
 #include <csignal>
 #include <opencv2/opencv.hpp>
@@ -14,6 +16,9 @@ void signalHandler(int signum) {
 int main() {
   signal(SIGINT, signalHandler);
 
+  // [SRP] 이전 프로세스 정리 (카메라 배타적 자원 해제 보장)
+  ProcessGuard::killStaleProcesses("SubCameraApp");
+
   // [최적화] OpenCV가 내부적으로 백그라운드 스레드를 과도하게 생성하여
   // TFLite의 XNNPACK(AI 추론 스레드)와 CPU 코어를 두고 경합하는 현상을 방지
   cv::setNumThreads(1);
@@ -24,6 +29,6 @@ int main() {
   controller.run(&g_stop_requested);
 
   // run() 리턴 후 소멸자에서 안전하게 정리됨
-  std::cout << "[Main] 시스템이 정상 종료되었습니다." << std::endl;
+  LOG_INFO("Main", "시스템이 정상 종료되었습니다.");
   return 0;
 }

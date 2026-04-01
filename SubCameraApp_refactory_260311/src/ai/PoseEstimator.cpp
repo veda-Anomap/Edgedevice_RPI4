@@ -74,21 +74,21 @@ std::vector<SingleDetection> PoseEstimator::detect(const cv::Mat &frame) {
   for (int i = 0; i < AppConfig::MAX_DETECTIONS; ++i) {
     float *data = output + (i * AppConfig::DETECTION_STRIDE);
 
-    if (data[4] > AppConfig::CONFIDENCE_THRESHOLD) {
+    if (data[AppConfig::IDX_CONF] > AppConfig::CONFIDENCE_THRESHOLD) {
       SingleDetection det;
 
-      float x1 = data[0] * AppConfig::FRAME_WIDTH;
-      float y1 = data[1] * AppConfig::FRAME_HEIGHT;
-      float x2 = data[2] * AppConfig::FRAME_WIDTH;
-      float y2 = data[3] * AppConfig::FRAME_HEIGHT;
+      float x1 = data[AppConfig::IDX_X1] * AppConfig::FRAME_WIDTH;
+      float y1 = data[AppConfig::IDX_Y1] * AppConfig::FRAME_HEIGHT;
+      float x2 = data[AppConfig::IDX_X2] * AppConfig::FRAME_WIDTH;
+      float y2 = data[AppConfig::IDX_Y2] * AppConfig::FRAME_HEIGHT;
       det.box =
           cv::Rect(cv::Point((int)x1, (int)y1), cv::Point((int)x2, (int)y2));
 
       det.skeleton.resize(AppConfig::NUM_KEYPOINTS);
       for (int j = 0; j < AppConfig::NUM_KEYPOINTS; ++j) {
         det.skeleton[j] =
-            cv::Point((int)(data[6 + j * 3] * AppConfig::FRAME_WIDTH),
-                      (int)(data[7 + j * 3] * AppConfig::FRAME_HEIGHT));
+            cv::Point((int)(data[AppConfig::IDX_KPT_START + j * 3] * AppConfig::FRAME_WIDTH),
+                      (int)(data[AppConfig::IDX_KPT_START + 1 + j * 3] * AppConfig::FRAME_HEIGHT));
       }
 
       detections.push_back(det);

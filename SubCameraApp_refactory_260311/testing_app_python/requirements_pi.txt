@@ -1,0 +1,7 @@
+# Raspberry Pi 4B optimized requirements
+opencv-python
+PyQt5
+tflite-runtime
+numpy
+pandas
+matplotlib

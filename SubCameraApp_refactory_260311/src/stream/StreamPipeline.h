@@ -53,6 +53,10 @@ private:
   void aiWorkerLoop();
   void processingLoop();
 
+  // 파이프라인 문자열 생성 헬퍼 (리팩토링)
+  std::string getCapturePipelineDesc() const;
+  std::string getSendPipelineDesc(const std::string &target_ip, int target_port) const;
+
   // 주입된 의존성 참조 (소유하지 않음)
   ICamera &camera_;
   IAiDetector &detector_;

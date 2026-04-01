@@ -63,6 +63,8 @@ public:
     // 모터 제어 직접 수행 (SubCamController에서 호출)
     bool handleMotorCmd(const std::string& cmd);
 
+    int getLatestLux() const { return latest_lux_.load(); }
+
 private:
     bool handleStatusReq();
 
@@ -73,6 +75,7 @@ private:
     UartPort uart_;
     BridgeLogger logger_;
     INetworkSender* sender_ = nullptr;
+    std::atomic<int> latest_lux_{0};
 
     // [신규] 비동기 UART 처리를 위한 단일 스레드 구조
     void uartLoop(std::atomic<bool>* stop_flag);

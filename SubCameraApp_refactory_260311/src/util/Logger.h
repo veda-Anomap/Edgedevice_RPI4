@@ -27,6 +27,7 @@ public:
         if (tag == "PERF_PRE" && !AppConfig::ENABLE_LOG_PERF_PRE) return;
         if (tag == "PERF_AI" && !AppConfig::ENABLE_LOG_PERF_AI) return;
         if (tag == "FPS" && !AppConfig::ENABLE_LOG_FPS) return;
+        if (tag == "CAM_DIAG" && !AppConfig::ENABLE_LOG_CAM_DIAG) return;
 
         std::lock_guard<std::mutex> lock(mutex_);
         

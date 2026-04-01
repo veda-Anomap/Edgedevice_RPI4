@@ -53,3 +53,32 @@ dkms.conf
 
 # debug information files
 *.dwo
+
+# Build outputs and caches
+build/
+build*/
+__pycache__/
+*.pyc
+
+# Runtime artifacts
+logs/
+captures/
+
+# Media/model artifacts (do not commit)
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.bmp
+*.tif
+*.tiff
+*.avi
+*.mp4
+*.mov
+*.pt
+*.pth
+*.tflite
+*.zip
+
+# Generated CSV outputs
+fall_rules_*.csv

@@ -52,7 +52,7 @@ void RetinexEnhancer::enhance(const cv::Mat &src, cv::Mat &dst) {
   ximgproc::guidedFilter(R_tmp, R_tmp, R_tmp, 3, 0.01);
   R_tmp.convertTo(R, CV_8U, 255.0);
 
-  Mat eL = enhanceIllumination(L, 40.0f);
+  Mat eL = enhanceIllumination(L, k_); // 사용자가 조절 가능한 k_ 적용
   Mat el_32, er_32, ev_32, eV;
   eL.convertTo(el_32, CV_32F);
   R.convertTo(er_32, CV_32F);
@@ -106,11 +106,13 @@ void ToneMappingEnhancer::enhance(const cv::Mat &src, cv::Mat &dst) {
     uint8_t* p_dst = out_channels[i].data;
     int size = channels[i].total();
 
+    int j = 0;
+#ifdef __ARM_NEON
+    // [SIMD 최적화] NEON 가속 루프 (ARM 전용)
     float32x4_t v_inv255 = vdupq_n_f32(1.0f / 255.0f);
     float32x4_t v_eps = vdupq_n_f32(0.001f);
     float32x4_t v_255 = vdupq_n_f32(255.0f);
 
-    int j = 0;
     for (; j <= size - 4; j += 4) {
         // Load 8-bit, convert to 32-bit float
         uint8x8_t v8 = vld1_u8(p_src + j);
@@ -130,12 +132,12 @@ void ToneMappingEnhancer::enhance(const cv::Mat &src, cv::Mat &dst) {
         v_res = vmulq_f32(v_res, v_255);
         uint32x4_t v_u32 = vcvtq_u32_f32(v_res);
         
-        // 4픽셀 한꺼번에 스토어 (u32 -> u16 -> u8)
         uint16x4_t v16_out = vmovn_u32(v_u32);
         uint8x8_t v8_out = vmovn_u16(vcombine_u16(v16_out, v16_out));
         vst1_lane_u32((uint32_t*)(p_dst + j), vreinterpret_u32_u8(v8_out), 0);
     }
-    // Tail
+#endif
+    // Tail or Fallback (x86 개발 환경 등)
     for (; j < size; ++j) {
         float c = p_src[j] / 255.0f;
         p_dst[j] = saturate_cast<uchar>((c / (p_illum[j] + 0.001f)) * p_lut_illum[j] * 255.0f);
@@ -143,6 +145,33 @@ void ToneMappingEnhancer::enhance(const cv::Mat &src, cv::Mat &dst) {
   }
 
   merge(out_channels, dst);
+}
+
+// 2. [추가] YUV Advanced 구현
+void YuvAdvancedEnhancer::enhance(const cv::Mat &src, cv::Mat &dst) {
+  if (src.empty()) return;
+  Mat yuv;
+  cvtColor(src, yuv, COLOR_BGR2YUV);
+  vector<Mat> channels;
+  split(yuv, channels);
+
+  double mean_b = mean(channels[0])[0];
+  double g = gamma_;
+  if (g < 0) g = (mean_b < 50) ? 0.5 : 0.8; // Auto gamma
+
+  Mat lut(1, 256, CV_8U);
+  for (int i = 0; i < 256; i++)
+    lut.at<uchar>(i) = saturate_cast<uchar>(pow(i / 255.0, g) * 255.0);
+  LUT(channels[0], lut, channels[0]);
+
+  Ptr<CLAHE> clahe = createCLAHE(clips_, Size(8, 8));
+  clahe->apply(channels[0], channels[0]);
+
+  boxFilter(channels[1], channels[1], -1, Size(3, 3));
+  boxFilter(channels[2], channels[2], -1, Size(3, 3));
+
+  merge(channels, yuv);
+  cvtColor(yuv, dst, COLOR_YUV2BGR);
 }
 
 // 3. [방식 5] 2025 ICCV 기반 카중치 다중 스케일 디테일 강화
@@ -159,7 +188,7 @@ void DetailBoostEnhancer::enhance(const cv::Mat &src, cv::Mat &dst) {
   Mat detail1 = float_img - blur1;
   Mat detail2 = blur1 - blur2;
 
-  Mat boosted = float_img + (detail1 * 1.5f) + (detail2 * 2.0f);
+  Mat boosted = float_img + (detail1 * w1_) + (detail2 * w2_);
 
   boosted.setTo(0, boosted < 0);
   boosted.setTo(255, boosted > 255);
@@ -234,7 +263,7 @@ void UltimateBalancedEnhancer::enhance(const cv::Mat &src, cv::Mat &dst) {
   Mat mask;
   threshold(abs(detail), mask, 0.01, 1.0, THRESH_BINARY);
 
-  enhanced_L = enhanced_L + (detail.mul(mask) * 1.8f);
+  enhanced_L = enhanced_L + (detail.mul(mask) * s_strength_);
 
   enhanced_L.setTo(0, enhanced_L < 0);
   enhanced_L.setTo(1.0, enhanced_L > 1.0);
@@ -245,41 +274,50 @@ void UltimateBalancedEnhancer::enhance(const cv::Mat &src, cv::Mat &dst) {
 }
 
 // 8. AdaptiveHybridEnhancer 구현
-AdaptiveHybridEnhancer::AdaptiveHybridEnhancer()
-    : tone_map_(16, 0.01f, 0.5f) {}
+AdaptiveHybridEnhancer::AdaptiveHybridEnhancer(std::function<int()> get_lux_fn)
+    : get_lux_fn_(get_lux_fn), tone_map_(16, 0.01f, 0.5f) {}
 
 void AdaptiveHybridEnhancer::enhance(const cv::Mat &src, cv::Mat &dst) {
   if (src.empty()) return;
 
-  Scalar m = mean(src);
-  float avg = (float)(m[0] + m[1] + m[2]) / 3.0f;
+  int sensor_lux = get_lux_fn_ ? get_lux_fn_() : 0; // 0(밝음) to 255(어두움)
+  cv::Scalar m = cv::mean(src);
+  float img_mean = (float)(m[0] + m[1] + m[2]) / 3.0f; // 255(밝음) to 0(어두움)
 
-  /**
-   * [Hysteresis Logic]
-   * User Thresholds: Bright(>180), Normal(100~180), Dim(70~100), Extreme(<70)
-   */
-  int current_level = prev_level_;
-  if (avg > 185) current_level = 1;
-  else if (avg < 175 && avg > 105) current_level = 2;
-  else if (avg < 95 && avg > 75)   current_level = 3;
-  else if (avg < 65)                current_level = 4;
+  // 조도 방향 일치: (255 - img_mean)은 255에 가까울수록 어두움.
+  // 클수록 어두움을 뜻하는 hybrid_darkness 도출
+  float hybrid_darkness = (sensor_lux * 0.7f) + (255.0f - img_mean) * 0.3f;
 
-  switch (current_level) {
-    case 1: // Bright (Bypass)
-      dst = src;
-      break;
-    case 2: // Normal (Retinex/CLAHE)
-      retinex_.enhance(src, dst);
-      break;
-    case 3: // Dim (NEON ToneMap)
-      tone_map_.enhance(src, dst);
-      break;
-    case 4: // Extreme (ToneMap + DetailBoost)
-      tone_map_.enhance(src, dst);
-      detail_boost_.enhance(dst, dst);
-      break;
-    default:
-      dst = src;
+  if (hybrid_darkness > 130.0f) {
+    // --- 어두운 환경 ---
+    // Tonemap + 노이즈 억제 (어두울수록 eps 값이 0.02에서 0.10 로 팽창)
+    float t = std::max(0.0f, std::min(1.0f, (hybrid_darkness - 130.0f) / 125.0f));
+    float eps = 0.02f + 0.08f * t;
+    float gamma = 0.85f - 0.15f * t; // 0.85 -> 0.70 (너무 밝히면 노이즈 폭발)
+    
+    tone_map_.setEps(eps);
+    tone_map_.setGammaBase(gamma);
+    
+    cv::Mat processed;
+    if (hybrid_darkness > 185.0f) {
+        // 극한 조도 (Extreme): Box(5x5) 필터 후 Tonemap 적용
+        cv::boxFilter(src, processed, -1, cv::Size(5, 5));
+        tone_map_.enhance(processed, dst);
+        
+        // 극한 조도에서는 뭉개짐 복구를 위해 Detail Boost 가세 (링잉 억제)
+        detail_boost_.setW1(1.5f);
+        detail_boost_.setW2(2.5f);
+        detail_boost_.enhance(dst, dst);
+    } else {
+        // 중간 어둠 (Dim): Box(3x3) 필터
+        cv::boxFilter(src, processed, -1, cv::Size(3, 3));
+        tone_map_.enhance(processed, dst);
+    }
+  } else {
+    // --- 밝은 환경 ---
+    // Tonemap 배제, Detail Boost 단독 작용 (링잉 억제)
+    detail_boost_.setW1(1.5f);
+    detail_boost_.setW2(2.5f);
+    detail_boost_.enhance(src, dst);
   }
-  prev_level_ = current_level;
 }

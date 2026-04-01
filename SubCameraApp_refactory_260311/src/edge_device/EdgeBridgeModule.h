@@ -43,6 +43,9 @@ public:
     // [DIP] 모터 제어 명령 전달
     bool handleMotorCmd(const std::string& cmd);
 
+    // 최신 조도 센서 값 조회
+    int getLatestLux() const;
+
 private:
     void threadFunc();
 

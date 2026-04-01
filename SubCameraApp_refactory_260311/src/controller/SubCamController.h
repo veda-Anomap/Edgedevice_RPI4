@@ -42,6 +42,7 @@ public:
 
 private:
   void handleServerCommand(const std::string &server_ip, int udp_port, const std::string &body);
+  void processDeviceCommand(const std::string &body);
   void monitorDeviceStatusLoop();
 
   // --- 인터페이스 기반 컴포넌트 ---

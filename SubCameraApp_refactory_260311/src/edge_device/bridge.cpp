@@ -192,6 +192,7 @@ void Bridge::uartLoop(std::atomic<bool> *stop_flag) {
       if (success && frame.cmd == Stm32Proto::CMD_STATUS) {
         auto st = Stm32Proto::parseStatusJson(frame.payload_json);
         if (st) {
+          latest_lux_.store(st->light);
           sensor_buffer.push_back({{"tmp", st->tmp},
                                    {"hum", st->hum},
                                    {"dir", st->dir},

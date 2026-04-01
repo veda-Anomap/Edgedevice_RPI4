@@ -31,6 +31,14 @@ SubCamController::SubCamController() : is_running_(false) {
   sender_ptr_ = facade.get();
   command_receiver_ = std::move(facade);
 
+  // 1.5. [통합] Edge Device 브릿지 선행 초기화 (센서 룩업 콜백 활용을 위해)
+  edge_bridge_ = std::make_unique<EdgeBridgeModule>();
+  edge_bridge_->setNetworkSender(sender_ptr_); // [DIP] 네트워크 송신기 주입
+
+  if (!edge_bridge_->start()) {
+    LOG_ERROR(TAG, "EdgeBridge 시작 실패 (UART/설정 확인 필요). 카메라 기능은 정상 동작합니다.");
+  }
+
   // 2. 카메라 생성 (ICamera 구현체)
   camera_ = std::make_unique<GStreamerCamera>();
 
@@ -43,9 +51,10 @@ SubCamController::SubCamController() : is_running_(false) {
   );
 
   // 4.5. [최적화] 저조도 개선기 초기화
-  //low_light_enhancer_ = std::make_unique<LowLightEnhancer>();
-  // 톤업(ToneMapping) 알고리즘 적용 (CPU 다운샘플링 최적화 패치 적용됨)
-  low_light_enhancer_ = std::make_unique<ToneMappingEnhancer>();
+  // 기존 톤맵 전용 -> 조도 센서 기반 적응형 하이브리드 필터 (Illumination-Selective)
+  low_light_enhancer_ = std::make_unique<AdaptiveHybridEnhancer>([this]() {
+      return edge_bridge_ ? edge_bridge_->getLatestLux() : 150;
+  });
 
   // 5. AI 감지기 (의존성 주입: IImagePreprocessor)
   detector_ =
@@ -88,14 +97,6 @@ SubCamController::SubCamController() : is_running_(false) {
 
   // 10. 시스템 자원 모니터 생성
   resource_monitor_ = std::make_unique<SystemResourceMonitor>();
-
-  // 11. [통합] Edge Device 브릿지 모듈 생성 및 시작
-  edge_bridge_ = std::make_unique<EdgeBridgeModule>();
-  edge_bridge_->setNetworkSender(sender_ptr_); // [DIP] 네트워크 송신기 주입
-
-  if (!edge_bridge_->start()) {
-    LOG_ERROR(TAG, "EdgeBridge 시작 실패 (UART/설정 확인 필요). 카메라 기능은 정상 동작합니다.");
-  }
 
   LOG_INFO(TAG, "컴포넌트 초기화 완료 (Phase 2 + EdgeBridge 포함).");
 }
@@ -159,41 +160,44 @@ void SubCamController::handleServerCommand(const std::string &server_ip,
   LOG_INFO(TAG, "========================================");
 
   // 1. 스트리밍 시작 명령 조건 (START_STREAM 등 문자열 포함 시)
-  if (body.find("START_STREAM:") != std::string::npos) {
+  // [보안/안정성] find 대신 compare를 사용하여 명령어가 정확히 시작하는지 확인 (Junk 데이터 방지)
+  if (body.compare(0, 13, "START_STREAM:") == 0) {
     stream_transmitter_->setTarget(server_ip, udp_port + 1);
     stream_pipeline_->startStreaming(server_ip, udp_port);
   }
   
-  // 2. [DIP] 장치(모터) 제어 명령 분기 (MessageType::DEVICE 관련 JSON일 경우)
-  if (body.find("\"motor\"") != std::string::npos || body.find("\"cmd\"") != std::string::npos) {
-    if (edge_bridge_) {
-      // JSON 파싱 후 "motor" 키값만 전달하는 로직 (Bridge 내부 재사용 가능)
-      try {
-        auto j = nlohmann::json::parse(body);
-        std::string motor_cmd = "";
+  // 2. [리팩토링] 장치(모터) 제어 명령 분기 (JSON 핸들러로 위임)
+  if (body.find("{") != std::string::npos && body.find("}") != std::string::npos) {
+    processDeviceCommand(body);
+  }
+}
 
-        // get<std::string>()을 사용하여 명확하게 추출
-        if (j.contains("motor") && j.at("motor").is_string()) {
-          motor_cmd = j.at("motor").get<std::string>();
-        } else if (j.contains("cmd") && j.at("cmd").is_string()) {
-          motor_cmd = j.at("cmd").get<std::string>();
-        }
+void SubCamController::processDeviceCommand(const std::string &body) {
+  if (!edge_bridge_) return;
 
-        if (!motor_cmd.empty()) {
-          LOG_INFO(TAG, "STM32로 릴레이 시도: " + motor_cmd);
-          
-          // 성공 여부 로그 추가
-          bool res = edge_bridge_->handleMotorCmd(motor_cmd);
-          if (!res) {
-            LOG_ERROR(TAG, "EdgeBridge 전달 실패 (bridge_ 객체 확인 필요)");
-          } 
+  // JSON 파싱 후 "motor" 또는 "cmd" 키값 추출
+  try {
+    auto j = nlohmann::json::parse(body);
+    std::string motor_cmd = "";
+
+    if (j.contains("motor") && j.at("motor").is_string()) {
+      motor_cmd = j.at("motor").get<std::string>();
+    } else if (j.contains("cmd") && j.at("cmd").is_string()) {
+      motor_cmd = j.at("cmd").get<std::string>();
+    }
+
+    if (!motor_cmd.empty()) {
+      LOG_INFO(TAG, "STM32로 릴레이 시도: " + motor_cmd);
+      bool res = edge_bridge_->handleMotorCmd(motor_cmd);
+      if (!res) {
+        LOG_ERROR(TAG, "EdgeBridge 전달 실패 (bridge_ 객체 확인 필요)");
       }
     }
-    catch (...) {
-        LOG_ERROR(TAG, "JSON 파싱 중 오류 발생 또는 'motor'/'cmd' 키 없음.");
-    }
-    } // if (edge_bridge_) 닫기
-  } // if (body.find...) 닫기
+  } catch (const nlohmann::json::parse_error& e) {
+    LOG_ERROR(TAG, "JSON 파싱 에러: " + std::string(e.what()));
+  } catch (const std::exception& e) {
+    LOG_ERROR(TAG, "명령 처리 중 예외 발생: " + std::string(e.what()));
+  }
 }
 
 void SubCamController::monitorDeviceStatusLoop() {

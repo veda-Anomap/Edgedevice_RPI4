@@ -99,6 +99,11 @@ bool EdgeBridgeModule::isRunning() const {
     return running_.load();
 }
 
+int EdgeBridgeModule::getLatestLux() const {
+    if (bridge_) return bridge_->getLatestLux();
+    return 150; // 기본값
+}
+
 void EdgeBridgeModule::setNetworkSender(INetworkSender* sender) {
     this->sender_ = sender; // 멤버 변수에 저장
     if (bridge_) {
