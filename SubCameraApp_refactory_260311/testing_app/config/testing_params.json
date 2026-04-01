@@ -1,0 +1,108 @@
+{
+  "_comment": "SubCameraApp Testing App — 전처리/AI 탐지 파라미터 설정. value = 현재 적용값, default = 기본값, min/max = 조정 가능 범위.",
+
+  "preprocessor": {
+    "target_size":      { "default": 640, "min": 320, "max": 1280, "value": 640,
+                          "desc": "AI 모델 입력 크기 (정사각형 픽셀)" },
+    "normalize_scale":  { "default": 0.003921568, "value": 0.003921568,
+                          "desc": "정규화 배율 (1/255.0 = 0.003921568)" },
+    "color_conversion": { "default": 4, "value": 4,
+                          "desc": "OpenCV 색상 변환 코드 (4=COLOR_BGR2RGB, -1=없음)" }
+  },
+
+  "enhancer": {
+    "adaptive_bright_thresh":  { "default": 185, "min": 100, "max": 255, "value": 185,
+                                  "desc": "AdaptiveHybrid: 이 값 초과 시 Bypass(Level1)" },
+    "adaptive_normal_upper":   { "default": 175, "min": 100, "max": 250, "value": 175,
+                                  "desc": "AdaptiveHybrid: Normal 구간 상단" },
+    "adaptive_normal_lower":   { "default": 105, "min": 50,  "max": 180, "value": 105,
+                                  "desc": "AdaptiveHybrid: Normal 구간 하단 → Retinex(Level2)" },
+    "adaptive_dim_upper":      { "default": 95,  "min": 50,  "max": 150, "value": 95,
+                                  "desc": "AdaptiveHybrid: Dim 구간 상단" },
+    "adaptive_dim_lower":      { "default": 75,  "min": 30,  "max": 120, "value": 75,
+                                  "desc": "AdaptiveHybrid: Dim 구간 하단 → ToneMap(Level3)" },
+    "adaptive_extreme_thresh": { "default": 65,  "min": 10,  "max": 100, "value": 65,
+                                  "desc": "AdaptiveHybrid: 이 값 미만 → ToneMap+Detail(Level4)" },
+
+    "retinex_gf_radius":   { "default": 12,  "min": 4,  "max": 32, "value": 12,
+                              "desc": "RetinexEnhancer: Guided Filter 반지름 (V채널 조명 추정)" },
+    "retinex_gf_eps":      { "default": 652.0, "min": 10.0, "max": 5000.0, "value": 652.0,
+                              "desc": "RetinexEnhancer: Guided Filter eps (=0.0001*255^2=652.0)" },
+    "retinex_clahe_limit": { "default": 1.5, "min": 0.5, "max": 8.0, "value": 1.5,
+                              "desc": "RetinexEnhancer: CLAHE clip limit" },
+    "retinex_clahe_tile":  { "default": 8,   "min": 4,   "max": 16,  "value": 8,
+                              "desc": "RetinexEnhancer: CLAHE 타일 크기 (정사각형)" },
+    "retinex_illum_k":     { "default": 40.0, "min": 5.0, "max": 100.0, "value": 40.0,
+                              "desc": "RetinexEnhancer: enhanceIllumination k 계수" },
+
+    "tonemap_radius":      { "default": 16,  "min": 4,   "max": 48,  "value": 16,
+                              "desc": "ToneMappingEnhancer: Guided Filter 반지름" },
+    "tonemap_eps":         { "default": 0.01, "min": 0.001, "max": 0.1, "value": 0.01,
+                              "desc": "ToneMappingEnhancer: Guided Filter eps" },
+    "tonemap_gamma_base":  { "default": 0.5, "min": 0.1, "max": 1.0, "value": 0.5,
+                              "desc": "ToneMappingEnhancer: 감마 베이스 (gamma=base^x)" },
+    "tonemap_div_eps":     { "default": 0.001, "min": 0.0001, "max": 0.01, "value": 0.001,
+                              "desc": "ToneMappingEnhancer: 나눗셈 보호 epsilon" },
+
+    "detail_blur1_ksize":  { "default": 3,   "min": 3,   "max": 11, "value": 3,
+                              "desc": "DetailBoostEnhancer: 1차 가우시안 커널 (홀수)" },
+    "detail_blur1_sigma":  { "default": 1.0, "min": 0.5, "max": 3.0, "value": 1.0,
+                              "desc": "DetailBoostEnhancer: 1차 가우시안 sigma" },
+    "detail_blur2_ksize":  { "default": 7,   "min": 5,   "max": 21, "value": 7,
+                              "desc": "DetailBoostEnhancer: 2차 가우시안 커널 (홀수)" },
+    "detail_blur2_sigma":  { "default": 2.0, "min": 0.5, "max": 5.0, "value": 2.0,
+                              "desc": "DetailBoostEnhancer: 2차 가우시안 sigma" },
+    "detail_w1":           { "default": 1.5, "min": 0.5, "max": 5.0, "value": 1.5,
+                              "desc": "DetailBoostEnhancer: 미세 디테일 가중치" },
+    "detail_w2":           { "default": 2.0, "min": 0.5, "max": 6.0, "value": 2.0,
+                              "desc": "DetailBoostEnhancer: 중간 디테일 가중치" },
+
+    "cleansharp_gf_radius":  { "default": 12, "min": 4, "max": 32, "value": 12,
+                                "desc": "CleanSharpEnhancer: Guided Filter 반지름" },
+    "cleansharp_detail_w":   { "default": 1.2, "min": 0.3, "max": 3.0, "value": 1.2,
+                                "desc": "CleanSharpEnhancer: 디테일 증폭 가중치" },
+
+    "lowlight_clahe_limit":  { "default": 2.5, "min": 0.5, "max": 8.0, "value": 2.5,
+                                "desc": "LowLightEnhancer: CLAHE clip limit" },
+    "lowlight_gamma_dark":   { "default": 0.4, "min": 0.1, "max": 0.9, "value": 0.4,
+                                "desc": "LowLightEnhancer: 어두운 영상(Y<50) 감마" },
+    "lowlight_gamma_normal": { "default": 0.7, "min": 0.1, "max": 0.9, "value": 0.7,
+                                "desc": "LowLightEnhancer: 일반 영상 감마" }
+  },
+
+  "fall_detector": {
+    "confidence_threshold":     { "default": 0.5,  "min": 0.1, "max": 0.95, "value": 0.5,
+                                   "desc": "PoseEstimator: 사람 탐지 신뢰도 임계값" },
+    "ai_inference_interval":    { "default": 5,    "min": 1,   "max": 30,   "value": 5,
+                                   "desc": "N프레임당 1번 AI 추론 (CPU 부하 조절)" },
+    "fall_velocity_threshold":  { "default": 18.0, "min": 2.0, "max": 80.0, "value": 18.0,
+                                   "desc": "FallDetector: 중심 Y 하강 속도 임계값 (px/frame)" },
+    "side_fall_aspect_ratio":   { "default": 0.9,  "min": 0.3, "max": 2.5,  "value": 0.9,
+                                   "desc": "FallDetector: 측면낙상 종횡비 (box.width > body_h * ratio)" },
+    "side_fall_angle":          { "default": 45.0, "min": 10.0,"max": 85.0, "value": 45.0,
+                                   "desc": "FallDetector: 측면낙상 척추 각도 상한 (degree)" },
+    "frontal_fall_compression": { "default": 0.45, "min": 0.1, "max": 0.9,  "value": 0.45,
+                                   "desc": "FallDetector: 정면낙상 수직 압축률 하한" },
+    "frontal_fall_angle":       { "default": 50.0, "min": 10.0,"max": 85.0, "value": 50.0,
+                                   "desc": "FallDetector: 정면낙상 척추 각도 상한 (degree)" },
+    "dynamic_fall_angle":       { "default": 55.0, "min": 10.0,"max": 85.0, "value": 55.0,
+                                   "desc": "FallDetector: 동적낙상 척추 각도 상한 (degree)" },
+    "sitting_angle":            { "default": 50.0, "min": 10.0,"max": 85.0, "value": 50.0,
+                                   "desc": "FallDetector: 앉기 필터 각도 하한 (이 이상이면 앉기 판정)" },
+    "vote_window_size":         { "default": 6,    "min": 1,   "max": 30,   "value": 6,
+                                   "desc": "FallDetector: Sliding Window 크기 (프레임)" },
+    "vote_threshold":           { "default": 2,    "min": 1,   "max": 15,   "value": 2,
+                                   "desc": "FallDetector: 낙상 확정 최소 투표 수" }
+  },
+
+  "app": {
+    "ai_mode":       { "default": "tflite", "value": "tflite",
+                       "desc": "AI 모드: 'tflite'=실제 추론, 'slider'=더미 슬라이더" },
+    "model_path":    { "default": "yolo26n-pose_int8.tflite", "value": "yolo26n-pose_int8.tflite",
+                       "desc": "TFLite 모델 파일 경로" },
+    "num_threads":   { "default": 3, "min": 1, "max": 4, "value": 3,
+                       "desc": "TFLite 추론 스레드 수" },
+    "frame_width":   { "default": 640, "value": 640, "desc": "처리 프레임 너비" },
+    "frame_height":  { "default": 480, "value": 480, "desc": "처리 프레임 높이" }
+  }
+}
