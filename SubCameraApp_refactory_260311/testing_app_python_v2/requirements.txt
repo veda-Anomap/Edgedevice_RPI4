@@ -1,7 +1,0 @@
-PyQt5>=5.15.0
-opencv-python>=4.8.0
-opencv-contrib-python>=4.8.0
-numpy>=1.24.0
-# TFLite (Raspberry Pi: tflite-runtime, 데스크탑: tensorflow)
-# tflite-runtime>=2.14.0   # RPi / arm 권장
-# tensorflow>=2.14.0        # 데스크탑 개발 환경 권장

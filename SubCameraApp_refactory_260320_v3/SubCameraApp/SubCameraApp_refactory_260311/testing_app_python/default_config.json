@@ -1,0 +1,17 @@
+{
+  "tonemap_radius": 16,
+  "tonemap_gamma_base": 0.5,
+  "retinex_gf_radius": 12,
+  "retinex_clahe_limit": 1.5,
+  "retinex_illum_k": 40.0,
+  "detail_w1": 1.5,
+  "detail_w2": 2.0,
+  "focus_strength": 2.0,
+  "manual_lux_override": false,
+  "manual_lux_value": 150,
+  "adaptive_thresholds": {
+    "extreme_low": 65,
+    "dim": 95,
+    "normal": 175
+  }
+}
