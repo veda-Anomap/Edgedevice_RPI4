@@ -1,31 +1,70 @@
-﻿# VEDA Final (2026-04-02)
+﻿# VEDA Final
 
 SubCameraApp 기반 엣지 비전 프로젝트의 최종 스냅샷입니다.
-이 브랜치는 **코드 + README 중심**으로 정리되어 있으며, 빌드 산출물/이미지/모델/로그 파일은 제외되어 있습니다.
+이 브랜치는 코드와 문서 중심으로 관리되며, 빌드 산출물/이미지/대형 모델 파일은 제외합니다.
 
-## 프로젝트 구성
+## Repository Layout
 
 - `SubCameraApp_refactory_260320_v3/`
-  - C++ 기반 메인 런타임/스트리밍/AI 파이프라인
-  - 하위 `SubCameraApp/SubCameraApp_refactory_260311/`가 실제 코드 루트
+  - C++ 메인 런타임(캡처, 전처리, AI 추론, 이벤트 전송)
+  - 실제 빌드 루트: `SubCameraApp_refactory_260320_v3/SubCameraApp/SubCameraApp_refactory_260311/`
 - `testing_app_python/`
   - Python GUI 기반 전처리/룰 검증 도구
-- 루트 스크립트
+- 루트 실험 스크립트
   - `260326_firedetect_hanwha_detectenhanced*.py`
   - `ai_only_test_done.py`
   - `pi_fire_fusion_pipeline_ultralytics.py`
   - `rpi_heartbeat.cpp`
 
-## 빠른 시작
+## Required Libraries
 
-### 1) 저장소 클론
+### C++ Runtime
+
+- OpenCV 4.8+ (`opencv_core`, `imgproc`, `videoio`, `highgui`, `ximgproc`)
+- TensorFlow Lite C++ (`tensorflow/lite/interpreter.h`, `libtensorflowlite.so`)
+- GStreamer 1.0 (`libcamerasrc`, `v4l2convert`, `x264enc`, `rtph264pay`, `appsink`)
+- nlohmann/json (header-only)
+- POSIX thread/runtime libs (`pthread`, `dl`, `rt`)
+
+### Python Testing App
+
+- Python 3.10+
+- `numpy`
+- `opencv-contrib-python` (ximgproc 필요)
+- `PyQt5`
+- `tflite-runtime` (Raspberry Pi 권장) 또는 `tensorflow`
+
+## Recommended Specs
+
+| Item | Minimum | Recommended |
+|---|---|---|
+| Device | Raspberry Pi 4 (4GB) | Raspberry Pi 4/5 (8GB) |
+| OS | Raspberry Pi OS 64-bit | Raspberry Pi OS 64-bit (Bookworm) |
+| CPU | 4-core ARM | 4-core+ ARM, active cooling |
+| Camera | `/dev/video0` 접근 가능 장치 | libcamera 호환 CSI 카메라 |
+| Serial | `/dev/serial0` (115200) | UART + STM32 브리지 연결 |
+| Network | LAN/Wi-Fi | 유선 LAN |
+
+기본 실행 파라미터는 코드 기준으로 `CAPTURE 1920x1080`, `PROCESS 640x480`, `FPS 30`, `AI interval 5`입니다.
+
+## Install (Raspberry Pi OS / Ubuntu)
 
 ```bash
-git clone <repo-url>
-cd Edgedevice_RPI4
+sudo apt update
+sudo apt install -y \
+  build-essential cmake pkg-config git \
+  libopencv-dev libopencv-contrib-dev \
+  libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+  gstreamer1.0-tools gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+  gstreamer1.0-plugins-bad gstreamer1.0-plugins-ugly gstreamer1.0-libav \
+  libcamera-dev libcamera-apps \
+  nlohmann-json3-dev \
+  python3 python3-venv python3-pip
 ```
 
-### 2) C++ 메인 앱 빌드
+> `x264enc`는 `gstreamer1.0-plugins-ugly`에 포함됩니다.
+
+## Build and Run (C++)
 
 ```bash
 cd SubCameraApp_refactory_260320_v3/SubCameraApp/SubCameraApp_refactory_260311
@@ -33,55 +72,58 @@ mkdir -p build
 cd build
 cmake ..
 make -j4
-```
-
-### 3) 실행
-
-```bash
 ./subcam_main
 ```
 
-> 장치 접근 권한(UART/카메라)에 따라 `sudo`가 필요할 수 있습니다.
-
-### 4) Python 테스트 도구 실행
+필요 시:
 
 ```bash
-cd ../../../../testing_app_python
-python -m venv .venv
-# Linux/macOS
+sudo ./subcam_main
+```
+
+## Run Testing App (Python)
+
+```bash
+cd testing_app_python
+python3 -m venv .venv
 source .venv/bin/activate
-# Windows
-# .venv\Scripts\activate
-pip install -r requirements.txt
+pip install --upgrade pip
+pip install numpy opencv-contrib-python PyQt5
+# Raspberry Pi
+pip install tflite-runtime
+# x86 개발 PC 대안
+# pip install tensorflow
 python main.py
 ```
 
-## 최적화 요소 (요약)
+## Verification Checklist
 
-- 멀티스레드 파이프라인 분리
-  - Capture / Process / AI / Transmission 단계 분리로 지연 최소화
-- 큐/버퍼 안정화
-  - 이벤트 큐 상한, 샘플링 기반 AI 입력 게이팅
-- 스트림 안정성
-  - GStreamer 파이프라인 튜닝 및 backpressure 완화
-- 리소스 보호
-  - 프로세스/디바이스 충돌 방지용 guard 로직 포함
+```bash
+# GStreamer plugin check
+gst-inspect-1.0 libcamerasrc
+gst-inspect-1.0 x264enc
 
-## 사용 시 주의사항
+# Python OpenCV ximgproc check
+python -c "import cv2; print('ximgproc' in dir(cv2))"
+```
 
-- 빌드 산출물(`build/`)은 커밋하지 마세요.
-- 이미지/영상/모델(`*.png`, `*.jpg`, `*.avi`, `*.pt`, `*.tflite`)은 이 브랜치 정책상 제외됩니다.
-- 카메라/STM32 통신 파라미터는 `config/edge_device_config.json`, `config/AppConfig.h`를 먼저 확인하세요.
-- Raspberry Pi 환경에서는 OpenCV/GStreamer 버전 차이에 따라 성능 차이가 큽니다.
+## Optimization Notes
 
-## 참고 문헌 / 레퍼런스
+- 멀티스레드 파이프라인 분리(Capture / Process / AI / Tx)
+- 캡처 프레임 `clone()` 전략으로 GStreamer 버퍼 점유시간 축소
+- queue `leaky=downstream` 및 `max-buffers` 제한으로 backpressure 완화
+- `AI_INFERENCE_INTERVAL`로 추론 주기 제어
 
-- OpenCV Documentation: https://docs.opencv.org/
-- GStreamer Application Development Manual: https://gstreamer.freedesktop.org/documentation/
-- TensorFlow Lite Guide: https://www.tensorflow.org/lite
+## Operational Cautions
+
+- 카메라/UART 권한이 필요할 수 있습니다.
+- 카메라 충돌 시 기존 점유 프로세스를 먼저 정리하세요.
+- `config/AppConfig.h`, `config/edge_device_config.json` 값과 실제 장비 구성이 일치해야 합니다.
+- `build/`, 로그, 대용량 산출물은 커밋하지 않는 정책입니다.
+
+## References
+
+- OpenCV Docs: https://docs.opencv.org/
+- GStreamer Docs: https://gstreamer.freedesktop.org/documentation/
+- TensorFlow Lite: https://www.tensorflow.org/lite
 - nlohmann/json: https://github.com/nlohmann/json
-
-## 브랜치 정책
-
-- `final_0402`: veda_final 스냅샷 기준 배포/검토 브랜치
-- 문서/코드 중심 관리, 바이너리/산출물은 제외
